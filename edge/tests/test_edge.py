@@ -381,3 +381,21 @@ def test_network_demo_control_updates_uplink_state(tmp_path):
     assert pipe.uploader.online is None
     assert not pipe.uploader.offline_flag.exists()
     assert pipe.uploader.poked
+
+
+def test_edge_dashboard_explains_missing_build_then_serves_it(tmp_path):
+    class Pipe:
+        root = tmp_path / "snapshots"
+        uploader = None
+
+    web_dir = tmp_path / "web"
+    web_dir.mkdir()
+    (web_dir / "index.html").write_text('<script type="module" src="/src/main.jsx"></script>')
+    client = TestClient(create_app(Pipe(), web_dir))
+    r = client.get("/")
+    assert r.status_code == 503 and "npm run build" in r.text  # not the raw, unrunnable source
+
+    (web_dir / "dist").mkdir()
+    (web_dir / "dist" / "index.html").write_text("<p>built dashboard</p>")
+    r = client.get("/")
+    assert r.status_code == 200 and "built dashboard" in r.text  # no restart needed

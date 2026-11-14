@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -29,6 +29,17 @@ from .storage import Storage
 
 REPO = Path(__file__).resolve().parents[2]
 log = logging.getLogger(__name__)
+NOT_BUILT_HTML = """<!doctype html><meta charset="utf-8"><title>RescueSight: dashboard not built</title>
+<body style="font-family:system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem">
+<h1>Dashboard not built</h1>
+<p>The API is running, but <code>web/dist</code> does not exist, so there is no dashboard to serve.
+Build it once from the repository root:</p>
+<pre>cd web
+npm ci
+npm run build</pre>
+<p>Then reload this page (no restart needed). The API itself works now, e.g.
+<a href="/api/v1/status">/api/v1/status</a>.</p></body>"""
+
 ALLOWED_FILES = {"sightings.csv", "heatmap.geojson", "report.md", "telemetry.json", "ai-report.md"}
 ID_RE = r"^[A-Za-z0-9._-]{1,80}$"
 RESERVED_IDS = {".", ".."}  # match ID_RE but are directory references, not names
@@ -308,11 +319,19 @@ def create_app(storage: Storage | None = None) -> FastAPI:
         deterministic = _path(mission_id, row["version"], "report.md").read_text()
         return answer_question(store, mission_id, row, deterministic, request.question)
 
-    web = Path(os.environ.get("WEB_DIR", REPO / "web"))
-    if (web / "dist").is_dir():
-        web = web / "dist"
-    if web.exists():
-        app.mount("/", StaticFiles(directory=web, html=True), name="web")
+    # WEB_DIR is the web/ project folder; its dist/ build is what gets served.
+    dist = Path(os.environ.get("WEB_DIR", REPO / "web")) / "dist"
+    static = StaticFiles(directory=dist, html=True, check_dir=False)
+
+    async def dashboard(scope, receive, send):
+        # web/index.html loads /src/main.jsx, which a browser cannot run, so without a
+        # build show how to build instead of a blank page. Checked per request.
+        if (dist / "index.html").is_file():
+            await static(scope, receive, send)
+        else:
+            await HTMLResponse(NOT_BUILT_HTML, status_code=503)(scope, receive, send)
+
+    app.mount("/", dashboard, name="web")
     return app
 
 

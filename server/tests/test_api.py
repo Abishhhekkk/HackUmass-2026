@@ -87,6 +87,20 @@ def test_truncated_upload_rejected_and_nothing_stored(env):
     assert client.get("/api/v1/missions/m1/latest").status_code == 404
 
 
+def test_cloud_dashboard_explains_missing_build_then_serves_it(tmp_path, monkeypatch):
+    web = tmp_path / "web"
+    web.mkdir()
+    monkeypatch.setenv("WEB_DIR", str(web))
+    client = TestClient(create_app(Storage(f"sqlite:///{tmp_path}/c.db", tmp_path / "cloud")))
+    r = client.get("/")
+    assert r.status_code == 503 and "npm run build" in r.text
+    assert client.get("/api/v1/health").status_code == 200  # API routes unaffected
+    (web / "dist").mkdir()
+    (web / "dist" / "index.html").write_text("<p>built dashboard</p>")
+    r = client.get("/")
+    assert r.status_code == 200 and "built dashboard" in r.text
+
+
 @pytest.mark.parametrize("bad_id", [".", ".."])
 def test_dot_mission_id_rejected_and_nothing_written(env, tmp_path, bad_id):
     """'..' matches the ID character set but would write outside SNAPSHOT_DIR."""

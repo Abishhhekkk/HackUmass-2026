@@ -9,11 +9,22 @@ import re
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .snapshot import latest_version, snapshot_dir
+
+NOT_BUILT_HTML = """<!doctype html><meta charset="utf-8"><title>RescueSight: dashboard not built</title>
+<body style="font-family:system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem">
+<h1>Dashboard not built</h1>
+<p>The API is running, but <code>web/dist</code> does not exist, so there is no dashboard to serve.
+Build it once from the repository root:</p>
+<pre>cd web
+npm ci
+npm run build</pre>
+<p>Then reload this page (no restart needed). The API itself works now, e.g.
+<a href="/api/v1/status">/api/v1/status</a>.</p></body>"""
 
 ALLOWED_FILES = {"sightings.csv", "heatmap.geojson", "report.md", "telemetry.json", "manifest.json"}
 
@@ -25,9 +36,6 @@ class NetworkToggle(BaseModel):
 def create_app(pipe, web_dir: Path) -> FastAPI:
     app = FastAPI(title="RescueSight edge")
     root: Path = pipe.root
-    built_web = web_dir / "dist"
-    if built_web.is_dir():
-        web_dir = built_web
 
     def _dir(mission_id: str, version: int | None) -> tuple[Path, int]:
         if not re.match(r"^[A-Za-z0-9._-]{1,80}$", mission_id) or mission_id in {".", ".."}:
@@ -98,5 +106,20 @@ def create_app(pipe, web_dir: Path) -> FastAPI:
         d, _ = _dir(mission_id, None)
         return (d / "report.md").read_text()
 
-    app.mount("/", StaticFiles(directory=web_dir, html=True), name="web")
+    mount_dashboard(app, web_dir / "dist")
     return app
+
+
+def mount_dashboard(app: FastAPI, dist: Path) -> None:
+    """Serve the built React dashboard. web/index.html itself loads /src/main.jsx, which a
+    browser cannot run, so without a build we show how to build instead of a blank page.
+    The check happens per request, so building while the server runs is enough."""
+    static = StaticFiles(directory=dist, html=True, check_dir=False)
+
+    async def dashboard(scope, receive, send):
+        if (dist / "index.html").is_file():
+            await static(scope, receive, send)
+        else:
+            await HTMLResponse(NOT_BUILT_HTML, status_code=503)(scope, receive, send)
+
+    app.mount("/", dashboard, name="web")
