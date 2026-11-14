@@ -45,6 +45,11 @@ def cloud_version(mission: str) -> int:
     return r.json()["manifest"]["version"] if r.ok else 0
 
 
+def cloud_summary(mission: str) -> dict:
+    r = requests.get(f"{CLOUD}/api/v1/missions/{mission}/latest", timeout=2)
+    return r.json()["manifest"]["summary"] if r.ok else {}
+
+
 def log(msg: str) -> None:
     st = edge_status()
     u = st["uploader"]
@@ -73,6 +78,7 @@ def main() -> None:
     ]
     wait_for(f"{CLOUD}/api/v1/health")
     mission = f"demo-{time.strftime('%H%M%S')}"
+    exit_code = 1
     procs.append(subprocess.Popen([sys.executable, "-m", "rescue_edge.main", "--config",
                                    str(REPO / "config/edge.mock.yaml"), "--serve", "--mission-id", mission],
                                   cwd=REPO / "edge", env=env, stderr=subprocess.DEVNULL))
@@ -107,11 +113,22 @@ def main() -> None:
             if not st["uploader"]["pending"] and cloud == st["uploader"]["local_version"]:
                 break
             time.sleep(0.5)
-        ok = cloud == st["uploader"]["local_version"] and not st["uploader"]["pending"]
-        result = "PASS: cloud has the newest snapshot" if ok else (
-            f"FAIL: local v{st['uploader']['local_version']}, "
-            f"cloud v{cloud}, pending={st['uploader']['pending']}")
+        synced = cloud == st["uploader"]["local_version"] and not st["uploader"]["pending"]
+        # A sync of an empty map is not a working demo: check that people were located.
+        summary = cloud_summary(mission)
+        located = summary.get("estimated_people", 0)
+        failures = []
+        if not synced:
+            failures.append(f"local v{st['uploader']['local_version']}, cloud v{cloud}, "
+                            f"pending={st['uploader']['pending']}")
+        if located == 0:
+            failures.append(f"no located people in the final snapshot "
+                            f"(unlocated: {summary.get('unlocated_tracks')}, "
+                            f"location failures: {summary.get('location_failures')})")
+        result = (f"PASS: cloud has the newest snapshot with {located} estimated people"
+                  if not failures else "FAIL: " + "; ".join(failures))
         print(f"\nRESULT: {result}")
+        exit_code = 1 if failures else 0
         if args.keep:
             print("servers still running; Ctrl+C to stop")
             procs[1].wait()
@@ -120,6 +137,7 @@ def main() -> None:
     finally:
         for p in procs:
             p.terminate()
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
