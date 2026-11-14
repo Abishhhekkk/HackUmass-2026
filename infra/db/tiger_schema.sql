@@ -31,3 +31,29 @@ CREATE TABLE IF NOT EXISTS people (
   PRIMARY KEY (mission_id, person_id)
 );
 CREATE INDEX IF NOT EXISTS people_geom_idx ON people USING GIST (geom);
+
+-- Aggregated vision heatmap cells from each complete mission snapshot.
+CREATE TABLE IF NOT EXISTS heatmap_cells (
+  mission_id   TEXT NOT NULL,
+  cell_id      TEXT NOT NULL,
+  version      INTEGER NOT NULL,
+  count        INTEGER NOT NULL,
+  score        DOUBLE PRECISION NOT NULL,
+  person_ids   TEXT NOT NULL,
+  geometry_json TEXT NOT NULL,
+  geom geography(Polygon, 4326) NOT NULL,
+  PRIMARY KEY (mission_id, cell_id)
+);
+CREATE INDEX IF NOT EXISTS heatmap_cells_geom_idx ON heatmap_cells USING GIST (geom);
+
+CREATE TABLE IF NOT EXISTS unlocated_sightings (
+  mission_id TEXT NOT NULL,
+  person_id  TEXT NOT NULL,
+  version    INTEGER NOT NULL,
+  confidence DOUBLE PRECISION,
+  first_seen TEXT,
+  last_seen  TEXT,
+  reason     TEXT NOT NULL,
+  track_ids  TEXT,
+  PRIMARY KEY (mission_id, person_id)
+);

@@ -8,6 +8,7 @@ the Jetson. It is never a delta. Newer version = replaces older.
     manifest.json      written last; lists every other file with sha256 + byte size
     sightings.csv      one row per estimated person, plus rows for sightings with no location
     heatmap.geojson    grid cells (Polygon) + people (Point)
+    telemetry.json     latest frame-aligned drone position and pose, or unavailable reason
     report.md          deterministic text report
 <storage_root>/<mission_id>/LATEST    "7"
 ```
@@ -20,7 +21,7 @@ the Jetson. It is never a delta. Newer version = replaces older.
 | `mission_id`, `drone_id` | `[A-Za-z0-9._-]{1,80}`. Every record carries `drone_id`, so more drones can be added later |
 | `version` | integer, +1 each time the data changes. Server keeps the highest |
 | `created_at` | UTC ISO-8601, when the Jetson built the snapshot |
-| `content_hash` | sha256 of `heatmap.geojson` + `sightings.csv` (sorted by name, concatenated) |
+| `content_hash` | sha256 of `heatmap.geojson`, `sightings.csv`, and `telemetry.json` (sorted by name, concatenated) |
 | `data_window.start/end` | first/last frame time (GPS clock) |
 | `origin` | lat/lon the grid is anchored to (first located detection) |
 | `cell_size_m` | grid resolution |
@@ -38,8 +39,8 @@ n_frames, n_tracks, cell_id, position_method, unlocated_reason, track_ids`
 * `status = estimated_sighting`: has `lat/lon` (WGS84 decimal degrees) and `horizontal_error_m`.
 * `status = unlocated_sighting`: `lat/lon` empty, `unlocated_reason` is one of
   `no_telemetry, telemetry_stale, gnss_fix_invalid, altitude_invalid, attitude_exceeds_limit,
-  ray_too_oblique`. These may be the same people as located rows. They are never given the
-  drone's own position as a fallback.
+  ray_too_oblique, camera_resolution_mismatch`. These may be the same people as located rows.
+  They are never given the drone's own position as a fallback.
 * `person_id` (`P001`…) is only stable within one snapshot. `track_ids` are
   `pass:tracker_id`, which are temporary IDs inside one pass, never identities.
 
@@ -51,6 +52,15 @@ FeatureCollection, coordinates in **[longitude, latitude]** order (GeoJSON stand
 * `properties.kind = "person"`: Point; `person_id, confidence, horizontal_error_m,
   first_seen_utc, last_seen_utc, n_tracks, cell_id, status`.
 * Top-level `properties`: `cell_size_m`, `origin`, `heat_formula`.
+
+## telemetry.json
+
+The artifact records the drone pose looked up at the latest processed frame timestamp. It is
+not a detected person's location. A valid record has `available: true`, an ISO-8601
+`observed_at`, a `position` object with WGS84 `lat` and `lon`, and the available pose fields
+(`altitude_agl_m`, `heading_deg`, `pitch_deg`, `roll_deg`). If telemetry is missing or invalid,
+`available` is false and `reason` explains why; no position is invented. The artifact is
+included in each snapshot's file checksums and content hash.
 
 ## Units and frames
 

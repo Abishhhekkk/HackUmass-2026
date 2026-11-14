@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from .snapshot import latest_version, snapshot_dir
 
-ALLOWED_FILES = {"sightings.csv", "heatmap.geojson", "report.md", "manifest.json"}
+ALLOWED_FILES = {"sightings.csv", "heatmap.geojson", "report.md", "telemetry.json", "manifest.json"}
 
 
 class NetworkToggle(BaseModel):
@@ -24,6 +24,9 @@ class NetworkToggle(BaseModel):
 def create_app(pipe, web_dir: Path) -> FastAPI:
     app = FastAPI(title="RescueSight edge")
     root: Path = pipe.root
+    built_web = web_dir / "dist"
+    if built_web.is_dir():
+        web_dir = built_web
 
     def _dir(mission_id: str, version: int | None) -> tuple[Path, int]:
         v = version or latest_version(root / mission_id)
@@ -45,8 +48,10 @@ def create_app(pipe, web_dir: Path) -> FastAPI:
         if body.offline:
             flag.parent.mkdir(parents=True, exist_ok=True)
             flag.touch()
+            pipe.uploader.online = False
         else:
             flag.unlink(missing_ok=True)
+            pipe.uploader.online = None
             pipe.uploader.poke()
         return {"offline": body.offline}
 
@@ -80,7 +85,10 @@ def create_app(pipe, web_dir: Path) -> FastAPI:
         if name not in ALLOWED_FILES:
             raise HTTPException(404)
         d, _ = _dir(mission_id, version)
-        return FileResponse(d / name, filename=f"{mission_id}-{name}")
+        file_path = d / name
+        if not file_path.is_file():
+            raise HTTPException(404, f"{name} is not present in this snapshot")
+        return FileResponse(file_path, filename=f"{mission_id}-{name}")
 
     @app.get("/api/v1/missions/{mission_id}/report", response_class=PlainTextResponse)
     def report(mission_id: str):

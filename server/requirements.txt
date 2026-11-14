@@ -3,6 +3,7 @@ uvicorn>=0.27
 python-multipart>=0.0.9
 pydantic>=2.6
 requests>=2.31
+python-dotenv>=1.0
 # TigerData / Postgres:
 # psycopg[binary]>=3.1
 # tests:

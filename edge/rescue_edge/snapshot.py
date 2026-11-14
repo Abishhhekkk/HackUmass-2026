@@ -5,6 +5,7 @@ Each snapshot is the COMPLETE current state of the mission, never an increment:
   <root>/<mission_id>/v000007/
       sightings.csv      one row per estimated person + rows for unlocated tracks
       heatmap.geojson    grid cells (Polygon) + people (Point) for the map
+      telemetry.json     latest frame-aligned drone telemetry fix, or its unavailable reason
       report.md          deterministic text report
       manifest.json      written LAST; lists every file with sha256 + size
   <root>/<mission_id>/LATEST   -> "7"
@@ -89,6 +90,14 @@ def render_geojson(state: MissionState) -> bytes:
     return json.dumps(fc, separators=(",", ":")).encode()
 
 
+def render_telemetry(telemetry: dict | None) -> bytes:
+    return json.dumps(
+        telemetry or {"schema_version": 1, "available": False, "reason": "no_telemetry"},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+
+
 class SnapshotWriter:
     def __init__(self, root: str | Path, mission_id: str, drone_id: str):
         self.dir = Path(root) / mission_id
@@ -100,8 +109,13 @@ class SnapshotWriter:
             m = json.loads((self.dir / f"v{self.version:06d}" / "manifest.json").read_text())
             self._last_hash = m.get("content_hash")
 
-    def write_if_changed(self, state: MissionState, force: bool = False) -> int | None:
-        files = {"sightings.csv": render_csv(state), "heatmap.geojson": render_geojson(state)}
+    def write_if_changed(self, state: MissionState, force: bool = False,
+                         telemetry: dict | None = None) -> int | None:
+        files = {
+            "sightings.csv": render_csv(state),
+            "heatmap.geojson": render_geojson(state),
+            "telemetry.json": render_telemetry(telemetry),
+        }
         content_hash = sha256_bytes(b"".join(files[k] for k in sorted(files)))
         if content_hash == self._last_hash and not force:
             return None

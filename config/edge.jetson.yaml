@@ -30,7 +30,7 @@ camera:
 detector:
   kind: yolo
   model_path: models/yolov8n.engine   # build on the Jetson: see docs/hardware.md
-  imgsz: 960
+  imgsz: 640
   conf_threshold: 0.35
   device: 0
   tracker: bytetrack.yaml

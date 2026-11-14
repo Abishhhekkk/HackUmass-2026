@@ -1,52 +1,83 @@
 # Cloud deployment (Vultr + TigerData)
 
-The cloud side is optional. The drone and local dashboard work without it. It is one small
-FastAPI process.
+The cloud side is optional. The drone and local dashboard continue to work without it. The
+cloud service is a small FastAPI process.
+
+## Build the dashboard
+
+The React dashboard is built once and served as static files by either the edge or cloud API:
+
+```bash
+cd web
+npm ci
+npm run build
+cd ..
+```
+
+The build is written to `web/dist`. Both API servers automatically serve that build when it
+exists. For UI development, start the cloud API (`uvicorn rescue_api.app:app --reload --port
+8000` from `server/`), run the edge service on port 8080, then run `npm run dev` in `web/`. Vite
+proxies `/api` to the cloud API and `/edge-api` to the local edge API, so mission reports stay
+cloud-backed while story-page controls can reach the edge uploader. Without a local edge service,
+those controls run as an explicitly labeled visual preview. To point all API requests at a single
+service instead, set `VITE_API_PROXY` before starting Vite. Outage toggles require the edge
+uploader's `offline_flag_file`. The production dashboard uses same-origin `/api/v1` routes when
+served by FastAPI; real edge controls should be used from the edge dashboard.
 
 ## TigerData (Postgres + PostGIS)
 
 1. Create a Tiger Cloud service and copy its connection string.
-2. Enable PostGIS once (`CREATE EXTENSION postgis;`). The API also tries this at startup.
-3. `pip install "psycopg[binary]"` and set
-   `DATABASE_URL=postgresql://USER:PASS@HOST:PORT/tsdb?sslmode=require`.
-4. Start the API once. It applies `infra/db/tiger_schema.sql` (idempotent).
-5. **Check:** `GET /api/v1/health` reports `"db":"postgres"`, and after an upload
-   `/api/v1/missions/<id>/people/near?lat=..&lon=..&radius_m=100` returns rows.
-   This query runs through PostGIS `ST_DWithin`.
+2. Enable PostGIS (`CREATE EXTENSION postgis;`) if it is not already enabled. The API also tries
+   to enable it at startup.
+3. Install the optional Postgres driver with `pip install "psycopg[binary]>=3.1"` and configure
+   `DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/tsdb?sslmode=require` with your service's
+   connection details. Keep real credentials out of Git and frontend code.
+4. Start the API. It applies `infra/db/tiger_schema.sql` (idempotent).
+5. Check that `GET /api/v1/health` reports `"db":"postgres"`. After an upload,
+   `/api/v1/missions/<id>/people/near?lat=..&lon=..&radius_m=100` should return rows using
+   PostGIS `ST_DWithin`.
 
-Without `DATABASE_URL` the API uses SQLite at `data/cloud/rescue.db`. That's the fallback if
-sponsor access fails.
+Without `DATABASE_URL`, the API uses SQLite at `data/cloud/rescue.db`. Snapshot files are stored
+on the server filesystem under `data/cloud/snapshots`; Vultr Object Storage is not wired in.
 
-Honest framing for the sponsor: the data is time-stamped and geospatial (people with
-first/last-seen times, snapshot versions over time). PostGIS does the spatial queries for
-the map and the agent. Time-series features such as hypertables become useful once you
-store raw telemetry or many missions. Don't claim more than that.
+The current cloud data includes time-stamped located sightings, unlocated track summaries, and
+aggregated heatmap-cell polygons from each accepted snapshot, alongside versioned snapshot
+metadata. PostGIS powers spatial queries for the map and agent. Raw video is not uploaded or
+stored in TigerData. Hypertables may be useful later if the project begins storing high-volume
+telemetry; they are not currently used.
 
 ## Vultr
 
-A small Cloud Compute instance (1 vCPU / 1–2 GB, Ubuntu) is plenty. No GPU is needed: inference runs on the Jetson.
+A small Cloud Compute instance (1 vCPU / 1–2 GB, Ubuntu) is sufficient; inference runs on the
+Jetson, not the cloud.
 
 ```bash
 sudo apt update && sudo apt install -y python3-pip python3-venv git
 git clone <your repo> rescue-sight && cd rescue-sight
 python3 -m venv .venv && . .venv/bin/activate
-pip install -r server/requirements.txt "psycopg[binary]"      # + server/requirements-ai.txt for Gemini
-cp .env.example .env && nano .env                             # set INGEST_API_KEY, DATABASE_URL, GEMINI_API_KEY
+pip install -r server/requirements.txt "psycopg[binary]>=3.1"
+pip install -r server/requirements-ai.txt  # optional Gemini integration
+cd web && npm ci && npm run build && cd ..
+cp .env.example .env && nano .env
 set -a && . ./.env && set +a
 cd server && uvicorn rescue_api.app:app --host 0.0.0.0 --port 8000
 ```
 
-For the demo, run it under `tmux` or a systemd unit. Put Caddy in front for HTTPS
-(`caddy reverse-proxy --from your-domain --to :8000`), or open port 8000 in the Vultr
-firewall. Set the same `INGEST_API_KEY` on the Jetson and point `uploader.server_url` at the
-instance.
-
-Snapshot files live in `data/cloud/snapshots`. Vultr Object Storage (S3-compatible) is the
-natural next step for those files and for the later video/image upload. It isn't wired in yet.
+Set `INGEST_API_KEY`, `DATABASE_URL`, and (if enabled) `GEMINI_API_KEY` in the environment.
+Run under `tmux` or a systemd unit. Put Caddy in front for HTTPS, or secure the service with
+appropriate firewall rules. Set the same ingest key on the Jetson and point its uploader at
+the instance.
 
 ## Gemini report (optional)
 
-`pip install -r server/requirements-ai.txt`, set `GEMINI_API_KEY` (and optionally
-`GEMINI_MODEL`, default `gemini-2.5-flash`. Check this is still a current model name). The
-**AI summary** button on the cloud dashboard calls `POST /api/v1/missions/<id>/ai-report`.
-Without a key or network it returns the built-in report and says why.
+Install `server/requirements-ai.txt` and set `GEMINI_API_KEY` (optionally `GEMINI_MODEL`, default
+`gemini-2.5-flash`; verify that model is available for your key). For local development, the
+backend reads those values from the repository-root `.env` file or process environment; Vite
+does not load or bundle the root file. The cloud dashboard's AI summary calls
+After a snapshot upload is accepted, the cloud API automatically schedules a mission report.
+The dashboard polls `GET /api/v1/missions/<id>/ai-report` and presents it when ready; the report
+uses the allow-listed, read-only mission tools, including frame-aligned drone GPS, sightings,
+data gaps, and OpenStreetMap landmarks. Without an available Gemini integration/key, it records
+a deterministic report instead. Mission Q&A calls `POST /api/v1/missions/<id>/ask`; the
+on-demand report endpoint is `POST /api/v1/missions/<id>/ai-report`. Reports are optional cloud
+outputs and do not participate in onboard inference or snapshot creation.

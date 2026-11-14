@@ -11,3 +11,5 @@ models/*
 *.mp4
 *.db
 .venv/
+node_modules/
+/web/dist/

@@ -38,6 +38,27 @@ CREATE TABLE IF NOT EXISTS people (
   cell_id    TEXT,
   PRIMARY KEY (mission_id, person_id)
 );
+CREATE TABLE IF NOT EXISTS heatmap_cells (
+  mission_id TEXT NOT NULL,
+  cell_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  count INTEGER NOT NULL,
+  score DOUBLE PRECISION NOT NULL,
+  person_ids TEXT NOT NULL,
+  geometry_json TEXT NOT NULL,
+  PRIMARY KEY (mission_id, cell_id)
+);
+CREATE TABLE IF NOT EXISTS unlocated_sightings (
+  mission_id TEXT NOT NULL,
+  person_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  confidence DOUBLE PRECISION,
+  first_seen TEXT,
+  last_seen TEXT,
+  reason TEXT NOT NULL,
+  track_ids TEXT,
+  PRIMARY KEY (mission_id, person_id)
+);
 """
 
 PG_SCHEMA_FILE = Path(__file__).resolve().parents[2] / "infra" / "db" / "tiger_schema.sql"
@@ -87,7 +108,9 @@ class Storage:
         row = cur.fetchone()
         return (row[0], row[1]) if row else (0, None)
 
-    def insert_snapshot(self, cur, manifest: dict, received_at: str, sightings_csv: bytes) -> None:
+    def insert_snapshot(
+        self, cur, manifest: dict, received_at: str, sightings_csv: bytes, heatmap_geojson: bytes
+    ) -> None:
         cur.execute(self._q(
             "INSERT INTO snapshots (mission_id, version, drone_id, created_at, received_at, content_hash, manifest) "
             "VALUES (?,?,?,?,?,?,?)"),
@@ -95,8 +118,19 @@ class Storage:
              received_at, manifest["content_hash"], json.dumps(manifest)))
         # people table always mirrors the newest snapshot (it is a full state, not a delta)
         cur.execute(self._q("DELETE FROM people WHERE mission_id=?"), (manifest["mission_id"],))
+        cur.execute(self._q("DELETE FROM heatmap_cells WHERE mission_id=?"), (manifest["mission_id"],))
+        cur.execute(self._q("DELETE FROM unlocated_sightings WHERE mission_id=?"), (manifest["mission_id"],))
         rows = []
+        unlocated = []
         for r in csv.DictReader(io.StringIO(sightings_csv.decode())):
+            if r["status"] == "unlocated_sighting":
+                unlocated.append((
+                    manifest["mission_id"], r["person_id"], manifest["version"],
+                    float(r["confidence"]) if r["confidence"] else None,
+                    r["first_seen_utc"] or None, r["last_seen_utc"] or None,
+                    r["unlocated_reason"], r["track_ids"],
+                ))
+                continue
             if r["status"] != "estimated_sighting":
                 continue
             rows.append((manifest["mission_id"], r["person_id"], manifest["version"], float(r["lat"]),
@@ -106,6 +140,39 @@ class Storage:
             cur.executemany(self._q(
                 "INSERT INTO people (mission_id, person_id, version, lat, lon, horizontal_error_m, "
                 "confidence, first_seen, last_seen, cell_id) VALUES (?,?,?,?,?,?,?,?,?,?)"), rows)
+        if unlocated:
+            cur.executemany(self._q(
+                "INSERT INTO unlocated_sightings "
+                "(mission_id, person_id, version, confidence, first_seen, last_seen, reason, track_ids) "
+                "VALUES (?,?,?,?,?,?,?,?)"), unlocated)
+        heatmap = json.loads(heatmap_geojson)
+        cells = []
+        for feature in heatmap.get("features", []):
+            props = feature.get("properties", {})
+            if props.get("kind") != "cell" or feature.get("geometry", {}).get("type") != "Polygon":
+                continue
+            geometry = feature["geometry"]
+            geometry_json = json.dumps(geometry, separators=(",", ":"))
+            person_ids = json.dumps(props.get("person_ids", []), separators=(",", ":"))
+            values = (
+                manifest["mission_id"], props["cell_id"], manifest["version"],
+                int(props["count"]), float(props["score"]), person_ids, geometry_json,
+            )
+            if self.pg:
+                cur.execute(
+                    "INSERT INTO heatmap_cells "
+                    "(mission_id, cell_id, version, count, score, person_ids, geometry_json, geom) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,"
+                    "ST_SetSRID(ST_GeomFromGeoJSON(%s),4326)::geography)",
+                    (*values, geometry_json),
+                )
+            else:
+                cells.append(values)
+        if cells:
+            cur.executemany(self._q(
+                "INSERT INTO heatmap_cells "
+                "(mission_id, cell_id, version, count, score, person_ids, geometry_json) "
+                "VALUES (?,?,?,?,?,?,?)"), cells)
 
     # ------------------------------------------------------------------ reads
     def missions(self) -> list[dict]:

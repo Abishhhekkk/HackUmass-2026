@@ -97,11 +97,21 @@ def main() -> None:
         log("caught up")
         while edge_status()["running"]:
             time.sleep(2)
-        time.sleep(3)
-        log("flight finished, final snapshot")
+        log("flight finished, waiting for final snapshot sync")
+        deadline = time.monotonic() + 30
         st = edge_status()
-        ok = cloud_version(mission) == st["uploader"]["local_version"]
-        print("\nRESULT:", "cloud has the newest snapshot ✔" if ok else "cloud is behind ✘")
+        cloud = cloud_version(mission)
+        while time.monotonic() < deadline:
+            st = edge_status()
+            cloud = cloud_version(mission)
+            if not st["uploader"]["pending"] and cloud == st["uploader"]["local_version"]:
+                break
+            time.sleep(0.5)
+        ok = cloud == st["uploader"]["local_version"] and not st["uploader"]["pending"]
+        result = "PASS: cloud has the newest snapshot" if ok else (
+            f"FAIL: local v{st['uploader']['local_version']}, "
+            f"cloud v{cloud}, pending={st['uploader']['pending']}")
+        print(f"\nRESULT: {result}")
         if args.keep:
             print("servers still running; Ctrl+C to stop")
             procs[1].wait()

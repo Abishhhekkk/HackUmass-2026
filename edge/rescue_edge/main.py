@@ -21,6 +21,7 @@ from .aggregate import Aggregator
 from .capture import CameraSource, ReplaySource, VideoFileSource, csi_pipeline
 from .detector import build_detector
 from .geolocate import CameraModel, ErrorModel, pixel_to_ground
+from .report import iso
 from .scheduler import AdaptiveScheduler, SchedulerConfig
 from .snapshot import SnapshotWriter
 from .telemetry import SerialTelemetryReader, TelemetryBuffer, load_csv
@@ -98,7 +99,28 @@ class Pipeline:
 
     def snapshot(self, force: bool = False) -> int | None:
         state = self.agg.finalize()
-        v = self.writer.write_if_changed(state, force=force)
+        telemetry = None
+        if self.last_frame_t is not None:
+            lookup = self.telemetry.at(self.last_frame_t)
+            telemetry = {
+                "schema_version": 1,
+                "available": lookup.pose is not None,
+                "observed_at": iso(self.last_frame_t),
+                "source": "edge_telemetry",
+                "alignment": "TelemetryBuffer lookup at the latest processed frame timestamp",
+            }
+            if lookup.pose is None:
+                telemetry["reason"] = lookup.reason
+            else:
+                pose = lookup.pose
+                telemetry.update({
+                    "position": {"lat": pose.lat, "lon": pose.lon},
+                    "altitude_agl_m": pose.altitude_agl_m,
+                    "heading_deg": pose.heading_deg,
+                    "pitch_deg": pose.pitch_deg,
+                    "roll_deg": pose.roll_deg,
+                })
+        v = self.writer.write_if_changed(state, force=force, telemetry=telemetry)
         if v:
             log.info("snapshot v%d written (%d people)", v, len(state.people))
             if self.uploader:
@@ -135,6 +157,11 @@ class Pipeline:
             self.snapshot(force=True)  # final snapshot always carries the full frame counts
         finally:
             self.running, self.finished = False, True
+            if self.serial_reader and self.serial_reader.is_alive():
+                self.serial_reader.stop()
+                self.serial_reader.join(timeout=2.0)
+                if self.serial_reader.is_alive():
+                    log.error("telemetry reader did not stop within 2 seconds")
             log.info("pipeline finished: %s", self.scheduler.status())
 
     def status(self) -> dict:
@@ -142,6 +169,8 @@ class Pipeline:
                 "running": self.running, "finished": self.finished,
                 "frames": self.agg.frames, "detections": self.agg.detections,
                 "scheduler": self.scheduler.status(),
+                "demo_controls_available": bool(self.uploader),
+                "network_demo_available": bool(self.uploader and self.uploader.offline_flag),
                 "uploader": self.uploader.status() if self.uploader else None,
                 "telemetry_samples": len(self.telemetry)}
 

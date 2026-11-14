@@ -13,12 +13,16 @@ from __future__ import annotations
 import bisect
 import csv
 import json
+import logging
+import math
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from .geolocate import Pose
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -34,17 +38,42 @@ class TelemetrySample:
     hdop: float = 1.0
 
     @property
+    def invalid_reason(self) -> str | None:
+        values = (self.t, self.lat, self.lon, self.alt_agl, self.hdg, self.pitch, self.roll, self.hdop)
+        if (
+            not all(math.isfinite(value) for value in values)
+            or not (-90 <= self.lat <= 90 and -180 <= self.lon <= 180)
+            or self.fix < 3
+            or not 0 <= self.hdop <= 5.0
+        ):
+            return "gnss_fix_invalid"
+        if self.alt_agl <= 0:
+            return "altitude_invalid"
+        return None
+
+    @property
     def valid(self) -> bool:
-        return self.fix >= 3 and self.hdop <= 5.0 and self.alt_agl > 0
+        return self.invalid_reason is None
 
     @classmethod
     def from_dict(cls, d: dict) -> "TelemetrySample":
-        return cls(
-            t=float(d["t"]), lat=float(d["lat"]), lon=float(d["lon"]),
-            alt_agl=float(d["alt_agl"]), hdg=float(d["hdg"]),
-            pitch=float(d.get("pitch", 0.0)), roll=float(d.get("roll", 0.0)),
-            fix=int(d.get("fix", 3)), hdop=float(d.get("hdop", 1.0)),
-        )
+        try:
+            sample = cls(
+                t=float(d["t"]), lat=float(d["lat"]), lon=float(d["lon"]),
+                alt_agl=float(d["alt_agl"]), hdg=float(d["hdg"]),
+                pitch=float(d.get("pitch", 0.0)), roll=float(d.get("roll", 0.0)),
+                fix=int(d.get("fix", 3)), hdop=float(d.get("hdop", 1.0)),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Telemetry line is missing or has invalid required numeric fields") from exc
+        if not all(math.isfinite(value) for value in (
+            sample.t, sample.lat, sample.lon, sample.alt_agl, sample.hdg,
+            sample.pitch, sample.roll, sample.hdop,
+        )):
+            raise ValueError("Telemetry values must be finite numbers")
+        if not (-90 <= sample.lat <= 90 and -180 <= sample.lon <= 180):
+            raise ValueError("Telemetry latitude/longitude are outside WGS84 bounds")
+        return sample
 
 
 @dataclass(frozen=True)
@@ -61,9 +90,12 @@ def _lerp_angle(a: float, b: float, w: float) -> float:
 class TelemetryBuffer:
     """Time-ordered samples with interpolation. Thread-safe for one writer, many readers."""
 
-    def __init__(self, max_gap_s: float = 1.0, max_age_s: float = 2.0):
+    def __init__(self, max_gap_s: float = 1.0, max_age_s: float = 2.0, max_samples: int = 512):
+        if max_samples < 2:
+            raise ValueError("max_samples must be at least 2")
         self.max_gap_s = max_gap_s    # don't interpolate across gaps bigger than this
         self.max_age_s = max_age_s    # nearest sample must be at most this far from frame time
+        self.max_samples = max_samples
         self._t: list[float] = []
         self._s: list[TelemetrySample] = []
         self._lock = threading.Lock()
@@ -73,13 +105,19 @@ class TelemetryBuffer:
             i = bisect.bisect_right(self._t, s.t)
             self._t.insert(i, s.t)
             self._s.insert(i, s)
+            excess = len(self._s) - self.max_samples
+            if excess > 0:
+                del self._t[:excess]
+                del self._s[:excess]
 
     def __len__(self) -> int:
-        return len(self._t)
+        with self._lock:
+            return len(self._t)
 
     @property
     def first_valid(self) -> TelemetrySample | None:
-        return next((s for s in self._s if s.valid), None)
+        with self._lock:
+            return next((s for s in self._s if s.valid), None)
 
     def at(self, t: float) -> PoseLookup:
         with self._lock:
@@ -95,7 +133,7 @@ class TelemetryBuffer:
         if abs(nearest.t - t) > self.max_age_s:
             return PoseLookup(None, "telemetry_stale")
         if not nearest.valid:
-            return PoseLookup(None, "gnss_fix_invalid")
+            return PoseLookup(None, nearest.invalid_reason)
         if before and after and before is not after and before.valid and after.valid \
                 and (after.t - before.t) <= self.max_gap_s:
             w = (t - before.t) / (after.t - before.t)
@@ -130,45 +168,83 @@ class SerialTelemetryReader(threading.Thread):
         self.log_path = log_path
         self.clock_offset_s: float | None = None  # gps_time - local_time
         self.last_error: str | None = None
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
+        self._serial_lock = threading.Lock()
+        self._serial = None
 
     def now(self) -> float:
         """Current time on the GPS clock (falls back to local clock before first fix)."""
         return time.time() + (self.clock_offset_s or 0.0)
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
+        with self._serial_lock:
+            if self._serial is not None and self._serial.is_open:
+                self._serial.close()
 
     def run(self) -> None:
-        import serial  # pyserial, only needed for live flights
+        try:
+            import serial  # pyserial, only needed for live flights
+        except ImportError as exc:
+            self.last_error = "pyserial is not installed; install edge/requirements.txt"
+            log.error(self.last_error)
+            return
 
-        log = open(self.log_path, "a", newline="") if self.log_path else None
+        log_file = None
+        try:
+            if self.log_path:
+                path = Path(self.log_path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                log_file = path.open("a", newline="")
+        except OSError as exc:
+            self.last_error = f"cannot open telemetry log {self.log_path}: {exc}"
+            log.error(self.last_error)
+            return
+
         writer = None
-        while not self._stop.is_set():
-            try:
-                with serial.Serial(self.port, self.baud, timeout=1) as ser:
-                    while not self._stop.is_set():
+        try:
+            while not self._stop_event.is_set():
+                ser = None
+                try:
+                    ser = serial.Serial(self.port, self.baud, timeout=0.5)
+                    with self._serial_lock:
+                        self._serial = ser
+                    self.last_error = None
+                    log.info("ESP32 serial telemetry connected on %s at %d baud", self.port, self.baud)
+                    while not self._stop_event.is_set():
                         line = ser.readline().decode("utf-8", "ignore").strip()
                         if not line.startswith("{"):
                             continue
                         try:
                             d = json.loads(line)
                             s = TelemetrySample.from_dict(d)
-                        except (ValueError, KeyError):
+                        except (ValueError, KeyError, TypeError) as exc:
+                            log.debug("discarding invalid ESP32 telemetry line: %s", exc)
                             continue
                         if s.valid:
-                            # smoothed estimate; serial latency is a few ms, fine for this use
+                            # GPS time anchors camera timestamps even when the Jetson has no RTC.
                             off = s.t - time.time()
                             self.clock_offset_s = off if self.clock_offset_s is None \
                                 else 0.9 * self.clock_offset_s + 0.1 * off
                         self.buf.add(s)
-                        if log:
+                        if log_file:
                             if writer is None:
-                                writer = csv.DictWriter(log, fieldnames=list(s.__dict__.keys()))
-                                if log.tell() == 0:
+                                writer = csv.DictWriter(log_file, fieldnames=list(s.__dict__.keys()))
+                                if log_file.tell() == 0:
                                     writer.writeheader()
                             writer.writerow(s.__dict__)
-                            log.flush()
-            except Exception as e:  # serial unplugged etc. -> retry
-                self.last_error = str(e)
-                time.sleep(1.0)
+                            log_file.flush()
+                except (serial.SerialException, OSError) as exc:
+                    if not self._stop_event.is_set():
+                        self.last_error = str(exc)
+                        log.warning("ESP32 serial telemetry unavailable on %s: %s; retrying", self.port, exc)
+                        self._stop_event.wait(1.0)
+                finally:
+                    with self._serial_lock:
+                        if self._serial is ser:
+                            self._serial = None
+                    if ser is not None and ser.is_open:
+                        ser.close()
+        finally:
+            if log_file:
+                log_file.close()

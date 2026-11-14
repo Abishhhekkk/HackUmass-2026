@@ -11,12 +11,14 @@ Work through these in order. Each step has a check, so you know it works before 
 3. Install Ultralytics following the **Ultralytics NVIDIA Jetson guide** for your JetPack
    version. It lists the Jetson-specific PyTorch/torchvision wheels. Don't use the desktop
    `pip install torch`, which gives you a CPU-only build.
-4. Repo dependencies: `pip install -r edge/requirements.txt pyserial`.
+4. Install runtime dependencies without replacing JetPack's system OpenCV or PyTorch:
+   `python3 -m pip install numpy pyyaml requests pyserial`. Keep the Jetson's OpenCV build
+   with GStreamer, and install PyTorch/Ultralytics using the Jetson-specific instructions above.
 5. **Check:** `yolo predict model=yolov8n.pt source=<a test clip> classes=0` produces boxes.
-6. TensorRT, built **on the Jetson**, since engines are tied to the device:
-   `yolo export model=yolov8n.pt format=engine half=True imgsz=960`
-   then copy `yolov8n.engine` to `models/` and set `detector.model_path` in
-   `config/edge.jetson.yaml`. Keep `imgsz` the same in export and config.
+6. TensorRT, built **on the Jetson**, since engines are tied to the device. The repository
+   exporter defaults to YOLOv8n, FP16, batch 1, and 640x640:
+   `python3 edge/export_model.py --model yolov8n.pt --output models/yolov8n.engine --imgsz 640`.
+   Set `detector.model_path` and `detector.imgsz` in `config/edge.jetson.yaml` to match.
 7. **Check:** compare FPS and the boxes on the same clip between `.pt` and `.engine`. Write down
    the FPS, temperature and power mode. Those are your demo numbers.
 
@@ -55,6 +57,9 @@ Bench checklist. Open the serial monitor at 115200 baud, or `cat /dev/ttyUSB0` o
 If the drone has a flight controller (ArduPilot/PX4), it already has a better GPS, compass
 and IMU. Reading its MAVLink telemetry (`pymavlink`) and writing the same JSON line is the
 better route. Only `telemetry.py` would change.
+
+For the standalone JSONL detector and exact ESP32 serial schema, see
+[Jetson live inference](./jetson-live-inference.md).
 
 ## 4. Clock alignment
 

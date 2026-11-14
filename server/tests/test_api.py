@@ -21,7 +21,7 @@ from rescue_edge.uploader import Uploader  # noqa: E402
 LAT, LON = 42.3893, -72.5283
 
 
-def make_snapshots(root, n_people_per_version=(2, 3)):
+def make_snapshots(root, n_people_per_version=(2, 3), telemetry=None):
     agg = Aggregator()
     w = SnapshotWriter(root, "m1", "drone-01")
     tid = 0
@@ -32,12 +32,12 @@ def make_snapshots(root, n_people_per_version=(2, 3)):
             for i in range(5):
                 agg.add(tid * 10 + i * 0.1, tid, 0.8, lat, lon, 3.0, None)
                 agg.note_frame(tid * 10 + i * 0.1)
-        w.write_if_changed(agg.finalize())
+        w.write_if_changed(agg.finalize(), telemetry=telemetry)
     return w
 
 
-def files_for(root, version, corrupt=False):
-    d = snapshot_dir(root, "m1", version)
+def files_for(root, version, corrupt=False, mission_id="m1"):
+    d = snapshot_dir(root, mission_id, version)
     m = json.loads((d / "manifest.json").read_text())
     out = [("manifest", ("manifest.json", (d / "manifest.json").read_bytes(), "application/json"))]
     for f in m["files"]:
@@ -49,6 +49,8 @@ def files_for(root, version, corrupt=False):
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("INGEST_API_KEY", "secret")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("GOOGLE_API_KEY", "")
     store = Storage(f"sqlite:///{tmp_path}/cloud.db", tmp_path / "cloud")
     client = TestClient(create_app(store))
     edge_root = tmp_path / "edge"
@@ -86,15 +88,58 @@ def test_truncated_upload_rejected_and_nothing_stored(env):
 
 
 def test_people_near_and_reports(env, monkeypatch):
-    client, root, _ = env
+    client, root, store = env
     client.post("/api/v1/snapshots", files=files_for(root, 2), headers=H)
     near = client.get("/api/v1/missions/m1/people/near", params={"lat": LAT, "lon": LON, "radius_m": 30}).json()
     assert [p["distance_m"] < 30 for p in near] == [True]
     assert "Mission report" in client.get("/api/v1/missions/m1/report").text
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    automated = client.get("/api/v1/missions/m1/ai-report").json()
+    assert automated["generated_by"] == "deterministic"
+    assert automated["human_review_required"] is True
+    assert automated["snapshot_version"] == 2
+    assert automated["report"]
+    assert store._conn.execute("SELECT COUNT(*) FROM heatmap_cells WHERE mission_id='m1'").fetchone()[0] > 0
+    assert store._conn.execute("SELECT COUNT(*) FROM people WHERE mission_id='m1'").fetchone()[0] == 3
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("GOOGLE_API_KEY", "")
     r = client.post("/api/v1/missions/m1/ai-report").json()
     assert r["generated_by"] == "deterministic" and r["human_review_required"]
+
+
+def test_unlocated_vision_tracks_are_indexed(env):
+    client, _, store = env
+    root = store.snapshot_dir.parent / "unlocated-edge"
+    aggregate = Aggregator(min_frames=3)
+    for index in range(3):
+        timestamp = index * 0.1
+        aggregate.add(timestamp, 9, 0.7, None, None, None, "gnss_fix_invalid")
+        aggregate.note_frame(timestamp)
+    writer = SnapshotWriter(root, "unlocated-mission", "drone-01")
+    assert writer.write_if_changed(aggregate.finalize()) == 1
+    upload_files = files_for(root, 1, mission_id="unlocated-mission")
+    response = client.post("/api/v1/snapshots", files=upload_files, headers=H)
+    assert response.status_code == 201
+    row = store._conn.execute(
+        "SELECT person_id, confidence, reason FROM unlocated_sightings "
+        "WHERE mission_id='unlocated-mission'"
+    ).fetchone()
+    assert row == ("U001", 0.7, "gnss_fix_invalid")
+
+
+def test_missing_automated_report_is_generated_on_read(env):
+    client, root, store = env
+    response = client.post("/api/v1/snapshots", files=files_for(root, 1), headers=H)
+    assert response.status_code == 201
+    report_file = store.snapshot_dir / "m1" / "v000001" / "ai-report.json"
+    report_file.unlink()
+
+    pending = client.get("/api/v1/missions/m1/ai-report")
+    assert pending.status_code == 200
+    assert pending.json()["status"] == "pending"
+    generated = client.get("/api/v1/missions/m1/ai-report").json()
+    assert generated["generated_by"] == "deterministic"
+    assert generated["snapshot_version"] == 1
+    assert generated["report"]
 
 
 def test_agent_tool_loop_with_fake_llm(env):
@@ -129,6 +174,82 @@ def test_agent_tool_loop_with_fake_llm(env):
     assert r["generated_by"] == "gemini"
     assert r["report"].endswith("Human review required - estimates only.")
     assert [c["tool"] for c in r["tool_calls"]] == ["get_mission_summary", "get_densest_cells", "drop_tables"]
+
+
+def test_gps_and_sighting_tools_are_snapshot_scoped(env):
+    from rescue_api.agent import make_tools
+
+    client, root, store = env
+    telemetry = {
+        "schema_version": 1, "available": True, "observed_at": "2026-01-01T00:00:00Z",
+        "source": "edge_telemetry",
+        "position": {"lat": LAT, "lon": LON},
+        "altitude_agl_m": 30, "heading_deg": 90, "pitch_deg": 1, "roll_deg": -1,
+    }
+    gps_root = root / "gps"
+    make_snapshots(gps_root, (2,), telemetry=telemetry)
+    client.post("/api/v1/snapshots", files=files_for(gps_root, 1), headers=H)
+    row = store.snapshot_row("m1")
+    tools = {tool.name: tool for tool in make_tools(store, "m1", row)}
+
+    gps = tools["get_latest_drone_gps"].invoke({})
+    assert gps["available"] is True
+    assert gps["position"] == {"lat": LAT, "lon": LON}
+    nearby = tools["get_sightings_near_drone"].invoke({"radius_m": 50})
+    assert nearby["available"] is True and nearby["sightings"]
+    recent = tools["get_recent_sightings"].invoke({"limit": 1})
+    assert len(recent) == 1 and "lat" in recent[0] and "lon" in recent[0]
+    assert tools["get_unlocated_sightings"].invoke({"limit": 1}) == []
+
+
+def test_question_agent_calls_read_only_gps_tool(env):
+    from langchain_core.messages import AIMessage
+
+    from rescue_api.agent import answer_question
+
+    client, root, store = env
+    telemetry = {
+        "schema_version": 1, "available": True, "observed_at": "2026-01-01T00:00:00Z",
+        "source": "edge_telemetry", "position": {"lat": LAT, "lon": LON},
+        "altitude_agl_m": 30, "heading_deg": 90, "pitch_deg": 1, "roll_deg": -1,
+    }
+    gps_root = root / "question-gps"
+    make_snapshots(gps_root, (2,), telemetry=telemetry)
+    client.post("/api/v1/snapshots", files=files_for(gps_root, 1), headers=H)
+
+    class FakeLLM:
+        def bind_tools(self, tools):
+            self.tools = {tool.name for tool in tools}
+            return self
+
+        def invoke(self, messages):
+            if not any(message.type == "tool" for message in messages):
+                return AIMessage("", tool_calls=[
+                    {"name": "get_latest_drone_gps", "args": {}, "id": "gps-1"}])
+            tool_result = " ".join(message.content for message in messages if message.type == "tool")
+            assert f'"lat": {LAT}' in tool_result
+            return AIMessage("Latest drone fix is available.")
+
+    result = answer_question(
+        store, "m1", store.snapshot_row("m1"), "fallback", "Where is the drone?", llm=FakeLLM())
+    assert result["generated_by"] == "gemini"
+    assert result["answer"].startswith("Latest drone fix")
+    assert result["tool_calls"][0]["tool"] == "get_latest_drone_gps"
+
+
+def test_ai_status_and_question_fallback(env):
+    client, root, _ = env
+    client.post("/api/v1/snapshots", files=files_for(root, 1), headers=H)
+    status = client.get("/api/v1/ai/status")
+    assert status.status_code == 200 and status.json()["configured"] is False
+    assert "get_latest_drone_gps" in status.json()["tools"]
+    response = client.post("/api/v1/missions/m1/ask", json={"question": "Where is the drone?"})
+    assert response.status_code == 200
+    assert response.json()["generated_by"] == "deterministic"
+    assert response.json()["human_review_required"] is True
+    assert "deterministic mission report" in response.json()["answer"]
+    assert client.post("/api/v1/missions/m1/ask", json={"question": "  "}).status_code == 422
+    assert client.post("/api/v1/missions/m1/ask", json={"question": "x" * 1001}).status_code == 422
 
 
 def test_uploader_sends_latest_after_outage(tmp_path, monkeypatch):

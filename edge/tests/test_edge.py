@@ -1,15 +1,24 @@
 import csv
 import json
 import math
+import sys
+import threading
+import time
+from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
+from edge_inference import _detection_record
 from rescue_edge.aggregate import Aggregator
+from rescue_edge.capture import Frame
+from rescue_edge.detector import Detection
 from rescue_edge.geolocate import (CameraModel, ErrorModel, Pose, ground_to_pixel, latlon_to_offset,
                                    offset_to_latlon, pixel_to_ground)
+from rescue_edge.local_server import create_app
 from rescue_edge.scheduler import AdaptiveScheduler, SchedulerConfig
 from rescue_edge.snapshot import SnapshotWriter, latest_version, sha256_bytes, snapshot_dir
-from rescue_edge.telemetry import TelemetryBuffer, TelemetrySample
+from rescue_edge.telemetry import SerialTelemetryReader, TelemetryBuffer, TelemetrySample
 
 CAM = CameraModel.from_hfov(1920, 1080, 70.0)
 LAT, LON = 42.3893, -72.5283
@@ -91,6 +100,8 @@ def test_stale_and_invalid_fix():
     assert b.at(20.0).reason == "telemetry_stale"
     assert b.at(11.0).reason == "gnss_fix_invalid"
     assert TelemetryBuffer().at(1).reason == "no_telemetry"
+    b.add(sample(12.0, alt_agl=-1))
+    assert b.at(12.0).reason == "altitude_invalid"
 
 
 def test_no_interpolation_across_gap():
@@ -98,6 +109,80 @@ def test_no_interpolation_across_gap():
     b.add(sample(10.0, lat=LAT))
     b.add(sample(13.0, lat=LAT + 0.001))
     assert b.at(10.5).pose.lat == LAT  # nearest, not interpolated
+
+
+def test_telemetry_buffer_is_bounded():
+    b = TelemetryBuffer(max_samples=3)
+    for t in range(5):
+        b.add(sample(float(t)))
+    assert len(b) == 3
+    assert b.at(-1.0).reason == "telemetry_stale"
+    assert b.at(4.0).pose.lat == LAT
+
+
+def test_telemetry_parser_rejects_nonfinite_and_out_of_range_gps():
+    with pytest.raises(ValueError, match="finite"):
+        TelemetrySample.from_dict({"t": float("nan"), "lat": LAT, "lon": LON, "alt_agl": 10, "hdg": 0})
+    with pytest.raises(ValueError, match="WGS84"):
+        TelemetrySample.from_dict({"t": 1, "lat": 91, "lon": LON, "alt_agl": 10, "hdg": 0})
+
+
+def test_serial_reader_stops_and_joins(monkeypatch):
+    connected = threading.Event()
+    payload = (json.dumps({
+        "t": time.time(), "lat": LAT, "lon": LON, "alt_agl": 10,
+        "hdg": 0, "pitch": 0, "roll": 0, "fix": 3, "sats": 9, "hdop": 1,
+    }) + "\n").encode()
+
+    class FakeSerial:
+        def __init__(self, _port, _baud, timeout):
+            assert timeout > 0
+            self.is_open = True
+            self._payload = payload
+            connected.set()
+
+        def readline(self):
+            if self._payload:
+                line, self._payload = self._payload, b""
+                return line
+            time.sleep(0.005)
+            return b""
+
+        def close(self):
+            self.is_open = False
+
+    monkeypatch.setitem(
+        sys.modules, "serial", SimpleNamespace(Serial=FakeSerial, SerialException=OSError)
+    )
+    buffer = TelemetryBuffer()
+    reader = SerialTelemetryReader("/dev/test", 115200, buffer)
+    reader.start()
+    assert connected.wait(timeout=1)
+    deadline = time.monotonic() + 1
+    while len(buffer) == 0 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    reader.stop()
+    reader.join(timeout=1)
+    assert not reader.is_alive()
+    assert len(buffer) == 1
+
+
+def test_live_detection_json_uses_geolocation_and_rejects_resolution_mismatch():
+    pose_buffer = TelemetryBuffer()
+    pose_buffer.add(sample(100.0))
+    detection = Detection((950, 530, 970, 550), 0.84, None)
+    frame = Frame(0, 100.0, width=CAM.width, height=CAM.height)
+    result = _detection_record(frame, detection, pose_buffer, CAM, ErrorModel(), "foot")
+    assert result["object_class"] == "person"
+    assert result["confidence"] == pytest.approx(0.84)
+    assert result["target_lat"] == pytest.approx(LAT)
+    assert result["target_lon"] == pytest.approx(LON)
+    assert result["unlocated_reason"] is None
+
+    wrong_size = Frame(1, 100.0, width=1280, height=720)
+    result = _detection_record(wrong_size, detection, pose_buffer, CAM, ErrorModel(), "foot")
+    assert result["target_lat"] is None and result["target_lon"] is None
+    assert result["unlocated_reason"] == "camera_resolution_mismatch"
 
 
 # ------------------------------------------------------------------ aggregation
@@ -167,6 +252,22 @@ def test_snapshot_versions_and_checksums(tmp_path):
     assert SnapshotWriter(tmp_path, "m1", "drone-01").write_if_changed(agg.finalize()) is None
 
 
+def test_telemetry_is_checksummed_and_changes_snapshot_content(tmp_path):
+    agg = Aggregator()
+    add_track(agg, 1, 0, 5, LAT, LON)
+    writer = SnapshotWriter(tmp_path, "m1", "drone-01")
+    pose = {"schema_version": 1, "available": True, "observed_at": "2026-01-01T00:00:00Z",
+            "position": {"lat": LAT, "lon": LON}, "source": "edge_telemetry"}
+    assert writer.write_if_changed(agg.finalize(), telemetry=pose) == 1
+    folder = snapshot_dir(tmp_path, "m1", 1)
+    assert json.loads((folder / "telemetry.json").read_text())["position"]["lat"] == LAT
+    manifest = json.loads((folder / "manifest.json").read_text())
+    entry = next(item for item in manifest["files"] if item["name"] == "telemetry.json")
+    assert sha256_bytes((folder / "telemetry.json").read_bytes()) == entry["sha256"]
+    changed_pose = {**pose, "position": {"lat": LAT + 0.0001, "lon": LON}}
+    assert writer.write_if_changed(agg.finalize(), telemetry=changed_pose) == 2
+
+
 def test_scheduler_strides():
     s = AdaptiveScheduler(SchedulerConfig(search_stride=4, hold_active_s=1), temp_reader=lambda: 50.0)
     processed = [i for i in range(12) if s.should_process(i)]
@@ -178,3 +279,34 @@ def test_scheduler_strides():
     hot = AdaptiveScheduler(SchedulerConfig(thermal_limit_c=80), temp_reader=lambda: 85.0)
     hot.update(0, 3)
     assert hot.mode == "thermal"
+
+
+def test_network_demo_control_updates_uplink_state(tmp_path):
+    class Uploader:
+        def __init__(self):
+            self.offline_flag = tmp_path / "OFFLINE"
+            self.online = True
+            self.poked = False
+
+        def poke(self):
+            self.poked = True
+
+    class Pipe:
+        root = tmp_path / "snapshots"
+        uploader = Uploader()
+
+    web_dir = tmp_path / "web"
+    web_dir.mkdir()
+    pipe = Pipe()
+    client = TestClient(create_app(pipe, web_dir))
+
+    response = client.post("/api/v1/network", json={"offline": True})
+    assert response.status_code == 200
+    assert pipe.uploader.online is False
+    assert pipe.uploader.offline_flag.exists()
+
+    response = client.post("/api/v1/network", json={"offline": False})
+    assert response.status_code == 200
+    assert pipe.uploader.online is None
+    assert not pipe.uploader.offline_flag.exists()
+    assert pipe.uploader.poked
