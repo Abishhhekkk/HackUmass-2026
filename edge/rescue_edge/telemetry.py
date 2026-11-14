@@ -88,10 +88,15 @@ def _lerp_angle(a: float, b: float, w: float) -> float:
 
 
 class TelemetryBuffer:
-    """Time-ordered samples with interpolation. Thread-safe for one writer, many readers."""
+    """Time-ordered samples with interpolation. Thread-safe for one writer, many readers.
 
-    def __init__(self, max_gap_s: float = 1.0, max_age_s: float = 2.0, max_samples: int = 512):
-        if max_samples < 2:
+    ``max_samples`` bounds memory for a live serial feed (oldest samples are dropped).
+    Use ``None`` for a replayed log: the whole flight is loaded before the first frame,
+    so a cap would discard the start of the flight and every early frame would be stale.
+    """
+
+    def __init__(self, max_gap_s: float = 1.0, max_age_s: float = 2.0, max_samples: int | None = 512):
+        if max_samples is not None and max_samples < 2:
             raise ValueError("max_samples must be at least 2")
         self.max_gap_s = max_gap_s    # don't interpolate across gaps bigger than this
         self.max_age_s = max_age_s    # nearest sample must be at most this far from frame time
@@ -105,7 +110,7 @@ class TelemetryBuffer:
             i = bisect.bisect_right(self._t, s.t)
             self._t.insert(i, s.t)
             self._s.insert(i, s)
-            excess = len(self._s) - self.max_samples
+            excess = 0 if self.max_samples is None else len(self._s) - self.max_samples
             if excess > 0:
                 del self._t[:excess]
                 del self._s[:excess]
@@ -152,7 +157,7 @@ class TelemetryBuffer:
 
 
 def load_csv(path: str | Path, buf: TelemetryBuffer | None = None) -> TelemetryBuffer:
-    buf = buf if buf is not None else TelemetryBuffer()
+    buf = buf if buf is not None else TelemetryBuffer(max_samples=None)
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
             buf.add(TelemetrySample.from_dict(row))

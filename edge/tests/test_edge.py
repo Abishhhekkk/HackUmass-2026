@@ -120,6 +120,38 @@ def test_telemetry_buffer_is_bounded():
     assert b.at(4.0).pose.lat == LAT
 
 
+def test_unbounded_buffer_keeps_every_sample():
+    b = TelemetryBuffer(max_samples=None)
+    for t in range(2000):
+        b.add(sample(t * 0.1))
+    assert len(b) == 2000
+    assert b.at(0.05).pose is not None
+
+
+def test_replayed_telemetry_log_is_not_truncated(tmp_path):
+    """Regression: a 512-sample cap dropped the start of replayed flights, so every
+    early frame came back telemetry_stale and the map showed no located people."""
+    from rescue_edge.main import Pipeline
+
+    n = 2000  # 200 s at 10 Hz, well over the live-feed cap
+    tel = tmp_path / "telemetry.csv"
+    with tel.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["t", "lat", "lon", "alt_agl", "hdg", "pitch", "roll", "fix", "hdop"])
+        for i in range(n):
+            w.writerow([1000 + i * 0.1, LAT, LON, 30, 0, 0, 0, 3, 1])
+    cfg = {
+        "mission_id": "replay-test", "storage_root": str(tmp_path / "snap"),
+        "source": {"kind": "replay", "path": str(tmp_path / "unused.jsonl")},
+        "telemetry": {"kind": "replay", "path": str(tel)},
+        "camera": {"width": 1920, "height": 1080, "hfov_deg": 70.0},
+        "detector": {"kind": "mock"},
+    }
+    pipe = Pipeline(cfg, tmp_path)
+    assert len(pipe.telemetry) == n
+    assert pipe.telemetry.at(1000.05).pose is not None  # start of the flight
+
+
 def test_telemetry_parser_rejects_nonfinite_and_out_of_range_gps():
     with pytest.raises(ValueError, match="finite"):
         TelemetrySample.from_dict({"t": float("nan"), "lat": LAT, "lon": LON, "alt_agl": 10, "hdg": 0})

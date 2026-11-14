@@ -44,7 +44,10 @@ class Pipeline:
         self.root = self._path(cfg.get("storage_root", "data/edge/snapshots"))
 
         tcfg = cfg["telemetry"]
-        self.telemetry = TelemetryBuffer(tcfg.get("max_gap_s", 1.0), tcfg.get("max_age_s", 2.0))
+        # A replayed log is loaded whole before the first frame, so it must not be capped;
+        # a live serial feed keeps a bounded rolling window.
+        self.telemetry = TelemetryBuffer(tcfg.get("max_gap_s", 1.0), tcfg.get("max_age_s", 2.0),
+                                         max_samples=None if tcfg["kind"] == "replay" else 512)
         self.serial_reader = None
         if tcfg["kind"] == "replay":
             load_csv(self._path(tcfg["path"]), self.telemetry)
