@@ -79,16 +79,48 @@ async function getEdgeJSON(path, options) {
 
 function FitMission({ features }) {
   const map = useMap();
-  useEffect(() => {
-    const points = [];
+  const userMoved = useRef(false);
+  const points = useMemo(() => {
+    const result = [];
     for (const feature of features) {
       if (feature.geometry?.type === "Point") {
         const [lon, lat] = feature.geometry.coordinates;
-        points.push([lat, lon]);
+        result.push([lat, lon]);
       }
     }
-    if (points.length) map.fitBounds(points, { padding: [50, 50], maxZoom: 18 });
-  }, [features, map]);
+    return result;
+  }, [features]);
+  const fit = useCallback(() => {
+    // 19 = OpenStreetMap's deepest zoom; a ~200 m search field then fills the map.
+    if (points.length) map.fitBounds(points, { padding: [50, 50], maxZoom: 19 });
+  }, [map, points]);
+
+  useEffect(() => {
+    fit();
+  }, [fit]);
+
+  // The map's flex container can grow after the first fit (the side panel loads later).
+  // Leaflet only notices window resizes, so it kept the old size: the fit was off-centre
+  // and the canvas could leave the bottom strip undrawn. Track the container itself and
+  // re-fit, unless the user has already panned or zoomed.
+  useEffect(() => {
+    const container = map.getContainer();
+    const markMoved = () => {
+      userMoved.current = true;
+    };
+    map.on("dragstart", markMoved);
+    container.addEventListener("wheel", markMoved, { passive: true });
+    const observer = new ResizeObserver(() => {
+      map.invalidateSize({ pan: false });
+      if (!userMoved.current) fit();
+    });
+    observer.observe(container);
+    return () => {
+      observer.disconnect();
+      map.off("dragstart", markMoved);
+      container.removeEventListener("wheel", markMoved);
+    };
+  }, [map, fit]);
   return null;
 }
 
@@ -188,10 +220,11 @@ function MissionMap({ data, showCells, showPeople, showOsm, windowSeconds, onSel
                 center={[lat, lon]}
                 radius={properties.horizontal_error_m || 0}
                 pathOptions={{
-                  color: "#f0eee8",
-                  dashArray: "5 5",
-                  fillOpacity: 0.02,
-                  opacity: old ? 0.2 : 0.6,
+                  color: "#59645b", // same as the legend's "Position error" ring
+                  dashArray: "4 4",
+                  fillColor: "#59645b",
+                  fillOpacity: old ? 0.02 : 0.05,
+                  opacity: old ? 0.25 : 0.7,
                   weight: 1,
                 }}
                 eventHandlers={{
@@ -378,8 +411,12 @@ function PipelineVisualizer({ status, manifest, data, onNodeSelect }) {
           100,
       )
     : null;
+  const onCloud = status?.role === "cloud" || data?.source === "cloud";
+  const summary = manifest?.summary || {};
   const cloudTone = !uploader
-    ? "not-configured"
+    ? onCloud && manifest
+      ? "ready"
+      : "not-configured"
     : uploader.online === false
       ? "offline"
       : uploader.pending
@@ -409,8 +446,8 @@ function PipelineVisualizer({ status, manifest, data, onNodeSelect }) {
       state: status?.telemetry_samples ? "ready" : manifest ? "ready" : "waiting",
       value: status?.role === "edge"
         ? `${status.telemetry_samples ?? 0} telemetry samples`
-        : data?.source === "cloud"
-          ? "Not in cloud snapshot"
+        : manifest
+          ? `${summary.estimated_people ?? 0} located · ${summary.unlocated_tracks ?? 0} unlocated`
           : "Telemetry unavailable",
       note: manifest?.position_method || "Waiting for telemetry",
       confidence: meanConfidence,
@@ -432,10 +469,14 @@ function PipelineVisualizer({ status, manifest, data, onNodeSelect }) {
         ? uploader.pending
           ? `v${uploader.local_version} pending`
           : `v${uploader.acked_version} acknowledged`
-        : data?.source === "cloud"
-          ? "Cloud copy"
+        : onCloud && manifest
+          ? `v${manifest.version} received`
           : "Not configured",
-      note: uploader?.online === false ? "Offline · saved locally" : "Retry-safe upload",
+      note: uploader?.online === false
+        ? "Offline · saved locally"
+        : !uploader && onCloud && data?.received_at
+          ? `Received ${formatTime(data.received_at)}`
+          : "Retry-safe upload",
     },
   ];
 
@@ -1728,11 +1769,21 @@ function MissionControl() {
                     {!edge ? "Connected" : uploader?.pending ? "Pending" : uploader?.online === false ? "Offline" : "Synced"}
                   </StatusPill>
                 </div>
-                <div className="health-row">
-                  <span className="health-icon"><Satellite size={14} /></span>
-                  <span>Telemetry samples</span>
-                  <b className="health-value">{status?.telemetry_samples ?? "—"}</b>
-                </div>
+                {edge ? (
+                  <div className="health-row">
+                    <span className="health-icon"><Satellite size={14} /></span>
+                    <span>Telemetry samples</span>
+                    <b className="health-value">{status?.telemetry_samples ?? "—"}</b>
+                  </div>
+                ) : (
+                  <div className="health-row">
+                    <span className="health-icon"><PackageCheck size={14} /></span>
+                    <span>Last snapshot received</span>
+                    <b className="health-value">
+                      {manifest ? `v${manifest.version} · ${formatTime(data?.received_at)}` : "—"}
+                    </b>
+                  </div>
+                )}
                 <div className="health-row">
                   <span className="health-icon"><Clock3 size={14} /></span>
                   <span>Last observation</span>
