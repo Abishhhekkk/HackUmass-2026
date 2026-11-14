@@ -87,6 +87,20 @@ def test_truncated_upload_rejected_and_nothing_stored(env):
     assert client.get("/api/v1/missions/m1/latest").status_code == 404
 
 
+@pytest.mark.parametrize("bad_id", [".", ".."])
+def test_dot_mission_id_rejected_and_nothing_written(env, tmp_path, bad_id):
+    """'..' matches the ID character set but would write outside SNAPSHOT_DIR."""
+    client, root, store = env
+    files = files_for(root, 1)
+    m = json.loads(files[0][1][1])
+    m["mission_id"] = bad_id
+    files[0] = ("manifest", ("manifest.json", json.dumps(m).encode(), "application/json"))
+    r = client.post("/api/v1/snapshots", files=files, headers=H)
+    assert r.status_code == 422
+    assert not (tmp_path / "v000001").exists() and not (store.snapshot_dir / "v000001").exists()
+    assert store.missions() == []
+
+
 def test_people_near_and_reports(env, monkeypatch):
     client, root, store = env
     client.post("/api/v1/snapshots", files=files_for(root, 2), headers=H)
@@ -250,6 +264,54 @@ def test_ai_status_and_question_fallback(env):
     assert "deterministic mission report" in response.json()["answer"]
     assert client.post("/api/v1/missions/m1/ask", json={"question": "  "}).status_code == 422
     assert client.post("/api/v1/missions/m1/ask", json={"question": "x" * 1001}).status_code == 422
+
+
+def test_uploader_parks_409_conflict_instead_of_retrying(tmp_path):
+    """A 409 can never succeed on retry: send it once, flag it, then wait for a newer version."""
+    from types import SimpleNamespace
+
+    import rescue_edge.uploader as upmod
+
+    edge = tmp_path / "edge"
+    w = make_snapshots(edge, (1, 2))  # v1, v2
+    calls = []
+
+    def fake_post(url, files, headers, timeout):
+        version = json.loads(files[0][1][1])["version"]
+        calls.append(version)
+        if version == 2:
+            return SimpleNamespace(status_code=409, text="same version with different content")
+        return SimpleNamespace(status_code=201, json=lambda: {"status": "accepted"})
+
+    up = Uploader(edge, "m1", "http://unused", base_backoff_s=0.01, poll_s=0.05)
+    orig_post = upmod.requests.post
+    upmod.requests.post = fake_post
+    try:
+        up.start()
+        time.sleep(0.5)
+        st = up.status()
+        assert calls == [2]  # sent once, not retried
+        assert st["conflict_version"] == 2 and st["needs_attention"] is True
+        assert "Needs a human" in st["last_error"] and st["acked_version"] == 0
+
+        # A newer local version is still uploaded and clears the attention flag.
+        agg = Aggregator()
+        lat, lon = offset_to_latlon(LAT, LON, 500, 0)
+        for i in range(5):
+            agg.add(900 + i * 0.1, 99, 0.8, lat, lon, 3.0, None)
+            agg.note_frame(900 + i * 0.1)
+        assert w.write_if_changed(agg.finalize()) == 3
+        up.poke()
+        for _ in range(40):
+            if up.status()["acked_version"] == 3:
+                break
+            time.sleep(0.05)
+        st = up.status()
+        assert calls == [2, 3]
+        assert st["acked_version"] == 3 and st["needs_attention"] is False
+    finally:
+        up.stop()
+        upmod.requests.post = orig_post
 
 
 def test_uploader_sends_latest_after_outage(tmp_path, monkeypatch):

@@ -31,6 +31,12 @@ REPO = Path(__file__).resolve().parents[2]
 log = logging.getLogger(__name__)
 ALLOWED_FILES = {"sightings.csv", "heatmap.geojson", "report.md", "telemetry.json", "ai-report.md"}
 ID_RE = r"^[A-Za-z0-9._-]{1,80}$"
+RESERVED_IDS = {".", ".."}  # match ID_RE but are directory references, not names
+
+
+def valid_id(value: str) -> bool:
+    """IDs become directory names under SNAPSHOT_DIR, so "." and ".." are refused."""
+    return bool(re.match(ID_RE, value)) and value not in RESERVED_IDS
 
 
 class FileEntry(BaseModel):
@@ -48,6 +54,13 @@ class Manifest(BaseModel, extra="allow"):
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     summary: dict
     files: list[FileEntry]
+
+    @field_validator("mission_id", "drone_id")
+    @classmethod
+    def id_must_not_be_dot_path(cls, value: str) -> str:
+        if value in RESERVED_IDS:
+            raise ValueError("'.' and '..' are not valid IDs")
+        return value
 
 
 class MissionQuestion(BaseModel):
@@ -200,7 +213,7 @@ def create_app(storage: Storage | None = None) -> FastAPI:
                             status_code=201)
 
     def _row(mission_id: str, version: int | None = None) -> dict:
-        if not re.match(ID_RE, mission_id):
+        if not valid_id(mission_id):
             raise HTTPException(404)
         row = store.snapshot_row(mission_id, version)
         if not row:

@@ -5,6 +5,9 @@
 * The server verifies every file's sha256 and keeps the highest version, so a cut-off
   or repeated upload is harmless; we simply try again.
 * Bounded exponential backoff with jitter.
+* A 409 (server holds this version number with different content, e.g. edge storage was
+  reset mid-mission) is NOT retried: resending the same bytes can never succeed. The
+  version is parked as a conflict that needs a human; a newer local version is still sent.
 """
 from __future__ import annotations
 
@@ -17,6 +20,12 @@ from pathlib import Path
 import requests
 
 from .snapshot import latest_version, snapshot_dir
+
+
+class UploadRejected(RuntimeError):
+    def __init__(self, status_code: int, text: str):
+        super().__init__(f"HTTP {status_code}: {text[:200]}")
+        self.status_code = status_code
 
 
 class Uploader(threading.Thread):
@@ -35,6 +44,7 @@ class Uploader(threading.Thread):
         self.online: bool | None = None
         self.last_error: str | None = None
         self.corrupt_next = False  # demo hook: send a truncated file once
+        self.conflict_version: int | None = None  # version the server rejected with 409
         self._stop = threading.Event()
         self._wake = threading.Event()
 
@@ -57,7 +67,9 @@ class Uploader(threading.Thread):
         local = latest_version(self.mission_dir)
         return {"local_version": local, "acked_version": self.state["acked_version"],
                 "pending": local > self.state["acked_version"], "online": self.online,
-                "last_error": self.last_error, "acked_at": self.state["acked_at"]}
+                "last_error": self.last_error, "acked_at": self.state["acked_at"],
+                "conflict_version": self.conflict_version,
+                "needs_attention": self.conflict_version is not None and local <= self.conflict_version}
 
     def stop(self) -> None:
         self._stop.set()
@@ -80,7 +92,7 @@ class Uploader(threading.Thread):
         headers = {"X-API-Key": self.api_key} if self.api_key else {}
         r = requests.post(self.url, files=files, headers=headers, timeout=(5, 30))
         if r.status_code >= 400:
-            raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+            raise UploadRejected(r.status_code, r.text)
         return r.json()
 
     def run(self) -> None:
@@ -91,7 +103,7 @@ class Uploader(threading.Thread):
                 self._wait(self.poll)
                 continue
             local = latest_version(self.mission_dir)
-            if local <= self.state["acked_version"]:
+            if local <= self.state["acked_version"] or local == self.conflict_version:
                 self._wait(self.poll)
                 continue
             try:
@@ -101,12 +113,25 @@ class Uploader(threading.Thread):
                 self.state = {"acked_version": local, "acked_at": time.time(),
                               "server_status": res.get("status")}
                 self._save_state()
-            except Exception as e:  # network down, timeout, checksum rejected...
-                self.online = not isinstance(e, requests.ConnectionError)
-                self.last_error = str(e)[:300]
+            except UploadRejected as e:
+                if e.status_code != 409:  # 422 checksum mismatch etc.: retry with backoff
+                    failures += 1
+                    self._backoff(e, failures)
+                    continue
+                self.online, self.conflict_version, failures = True, local, 0
+                self.last_error = (f"v{local} conflicts with a different v{local} already on the "
+                                   "server (edge storage reset?). Needs a human: start a new "
+                                   "mission ID. Not retrying this version.")
+                self._wait(self.poll)
+            except Exception as e:  # network down, timeout...
                 failures += 1
-                delay = min(self.cap, self.base * 2 ** (failures - 1))
-                self._wait(delay * random.uniform(0.7, 1.0))
+                self._backoff(e, failures)
+
+    def _backoff(self, e: Exception, failures: int) -> None:
+        self.online = not isinstance(e, requests.ConnectionError)
+        self.last_error = str(e)[:300]
+        delay = min(self.cap, self.base * 2 ** (failures - 1))
+        self._wait(delay * random.uniform(0.7, 1.0))
 
     def _wait(self, s: float) -> None:
         self._wake.wait(s)

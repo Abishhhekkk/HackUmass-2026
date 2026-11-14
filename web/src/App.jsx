@@ -1644,7 +1644,9 @@ function MissionControl() {
                   <b className="health-value">{formatTime(manifest?.data_window?.end)}</b>
                 </div>
               </div>
-              {uploader?.pending && (
+              {uploader?.needs_attention ? (
+                <div className="sync-callout"><AlertTriangle size={14} /><span>Needs attention: {uploader.last_error}</span></div>
+              ) : uploader?.pending && (
                 <div className="sync-callout"><AlertTriangle size={14} /><span>Local v{uploader.local_version}; cloud v{uploader.acked_version}. Upload will retry automatically.</span></div>
               )}
             </div>

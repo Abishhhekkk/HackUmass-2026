@@ -5,6 +5,7 @@ Exposes the same read routes as the cloud API, so web/ runs unchanged against ei
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -29,6 +30,8 @@ def create_app(pipe, web_dir: Path) -> FastAPI:
         web_dir = built_web
 
     def _dir(mission_id: str, version: int | None) -> tuple[Path, int]:
+        if not re.match(r"^[A-Za-z0-9._-]{1,80}$", mission_id) or mission_id in {".", ".."}:
+            raise HTTPException(404)
         v = version or latest_version(root / mission_id)
         d = snapshot_dir(root, mission_id, v)
         if not v or not (d / "manifest.json").exists():

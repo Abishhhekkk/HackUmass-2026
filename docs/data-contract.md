@@ -18,7 +18,7 @@ the Jetson. It is never a delta. Newer version = replaces older.
 | Field | Meaning |
 |---|---|
 | `schema_version` | `1` |
-| `mission_id`, `drone_id` | `[A-Za-z0-9._-]{1,80}`. Every record carries `drone_id`, so more drones can be added later |
+| `mission_id`, `drone_id` | `[A-Za-z0-9._-]{1,80}`, except `.` and `..` (IDs are directory names). Every record carries `drone_id`, so more drones can be added later |
 | `version` | integer, +1 each time the data changes. Server keeps the highest |
 | `created_at` | UTC ISO-8601, when the Jetson built the snapshot |
 | `content_hash` | sha256 of `heatmap.geojson`, `sightings.csv`, and `telemetry.json` (sorted by name, concatenated) |
