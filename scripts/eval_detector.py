@@ -17,6 +17,7 @@ import argparse
 import csv
 import statistics
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "edge"))
@@ -46,6 +47,12 @@ def main() -> int:
     ap.add_argument("--device", default="cpu", help="'cpu' or a CUDA index such as 0")
     ap.add_argument("--limit", type=int, help="evaluate only the first N images (quick check)")
     ap.add_argument("--csv", type=Path, help="also write the results table to this CSV")
+    ap.add_argument("--tile", type=int,
+                    help="tiled inference: tile size in ORIGINAL pixels; each tile runs at --imgsz "
+                         "(e.g. --tile 640 --imgsz 640 = native resolution with a 640 engine)")
+    ap.add_argument("--tile-overlap", type=float, default=0.2)
+    ap.add_argument("--no-full-frame", action="store_true",
+                    help="tiles only (default also runs the whole frame, for large/near people)")
     args = ap.parse_args()
 
     if not 0 < args.iou <= 1 or any(not 0 <= c < 1 for c in args.conf):
@@ -70,16 +77,37 @@ def main() -> int:
     device = int(args.device) if args.device.isdigit() else args.device
     floor = min(args.conf)
 
+    if args.tile:
+        import cv2
+
+        from rescue_edge.tiling import predict_tiled
+
     rows = []
     for size in args.imgsz:
         totals = {c: Counts() for c in args.conf}
         ms = []
         for n, path in enumerate(images, 1):
-            res = model.predict(str(path), imgsz=size, conf=floor, classes=args.model_classes,
-                                device=device, verbose=False)[0]
-            h, w = res.orig_shape
-            ms.append(res.speed.get("inference", 0.0))
-            preds = [(tuple(b), float(s)) for b, s in zip(res.boxes.xyxy.tolist(), res.boxes.conf.tolist())]
+            if args.tile:
+                image = cv2.imread(str(path))
+                h, w = image.shape[:2]
+
+                def run(crop, size=size):
+                    r = model.predict(crop, imgsz=size, conf=floor, classes=args.model_classes,
+                                      device=device, verbose=False)[0]
+                    return r.boxes.xyxy.cpu().numpy(), r.boxes.conf.cpu().numpy()
+
+                t0 = time.perf_counter()
+                boxes, scores = predict_tiled(run, image, args.tile, args.tile_overlap,
+                                              full_frame=not args.no_full_frame)
+                ms.append(1000 * (time.perf_counter() - t0))  # all tiles, wall clock
+                preds = [(tuple(b), float(s)) for b, s in zip(boxes.tolist(), scores.tolist())]
+            else:
+                res = model.predict(str(path), imgsz=size, conf=floor, classes=args.model_classes,
+                                    device=device, verbose=False)[0]
+                h, w = res.orig_shape
+                ms.append(res.speed.get("inference", 0.0))
+                preds = [(tuple(b), float(s))
+                         for b, s in zip(res.boxes.xyxy.tolist(), res.boxes.conf.tolist())]
             truth = load_truth(args.labels, path, args.format, w, h, label_classes)
             for c in args.conf:
                 add(totals[c], match_image(preds, truth, c, args.iou))
@@ -93,15 +121,18 @@ def main() -> int:
                          "small_gt": t.gt_small, "recall_small": t.recall_small,
                          "inference_ms_median": statistics.median(ms)})
 
+    tiling = (f", tiles {args.tile}px overlap {args.tile_overlap:g}"
+              f"{'' if args.no_full_frame else ' + full frame'}") if args.tile else ""
     print(f"\n{len(images)} images, {args.format} labels, IoU {args.iou}, weights {args.weights}, "
-          f"device {args.device}" + (f", {missing} images without a label file" if missing else ""))
+          f"device {args.device}{tiling}" + (f", {missing} images without a label file" if missing else ""))
     print("| imgsz | conf | recall | precision | F1 | recall (small <32px) | TP | FP | FN | ms/img |")
     print("|---|---|---|---|---|---|---|---|---|---|")
     for r in sorted(rows, key=lambda r: (-(r["recall"] or 0), r["imgsz"])):
         print(f"| {r['imgsz']} | {r['conf']:g} | {fmt(r['recall'])} | {fmt(r['precision'])} | "
               f"{fmt(r['f1'])} | {fmt(r['recall_small'])} | {r['tp']} | {r['fp']} | {r['fn']} | "
               f"{fmt(r['inference_ms_median'], pct=False)} |")
-    print("Sorted by recall (the priority metric). ms/img = median inference time on this machine.")
+    print("Sorted by recall (the priority metric). ms/img = median inference time on this machine"
+          + (" (all tiles, wall clock)." if args.tile else "."))
     if args.csv:
         args.csv.parent.mkdir(parents=True, exist_ok=True)
         with args.csv.open("w", newline="") as f:

@@ -44,6 +44,44 @@ the trend is the point: a larger input size and a lower threshold raise recall s
 (1280 / 0.10 finds ~6.7× as many), at the cost of more false alarms (which the tracker's
 `min_frames` and human review absorb) and ~4× the compute per frame.
 
+## Why: is it the model?
+
+Mostly it is **pixels**, then the training data. In VisDrone val the median labelled person
+is 25 px tall and 12 px wide. Squeezing a ~1360 px frame into 640 px leaves the median
+person 12 px tall (about 6 px wide); 68% end up under 16 px. YOLO's finest grid is 8 px
+per cell, so they are one or two cells. Even at native resolution (1280), stock COCO
+weights find only a third: COCO is mostly ground-level photos, and people seen from above
+look different.
+
+For your own footage (1920 px frame, 70° lens, nadir), a standing person's shoulders:
+
+| Altitude | cm/px | shoulders, native | after resize to 640 |
+|---|---|---|---|
+| 15 m | 1.1 | 41 px | 14 px |
+| 20 m | 1.5 | 31 px | 10 px |
+| 30 m | 2.2 | 21 px | 7 px |
+| 50 m | 3.6 | 12 px | 4 px |
+
+## Experiments (same 548 images, IoU 0.5 unless noted, conf 0.10)
+
+| Change | Recall | Precision | CPU ms/img | What it shows |
+|---|---|---|---|---|
+| Current config: v8n, 640 full frame, conf 0.35 | 5.0% | 83.1% | 34 | baseline |
+| v8n, 640 full frame, conf 0.10 | 13.9% | 54.3% | 34 | threshold alone: ~3× |
+| v8n, 1280 full frame | 33.4% | 54.9% | 120 | native resolution |
+| v8n, 1280, scored at IoU 0.3 | 37.4% | 61.5% | 120 | misses are real, not loose boxes |
+| v8n, 1920 full frame (upscaled) | 43.8% | 51.9% | 238 | more pixels per person keeps helping |
+| v8s, 1280 | 40.1% | 61.2% | 268 | bigger model: +7 pts for 2.3× compute |
+| v8m, 1280 | 41.7% | 71.2% | 638 | +8 pts for 5.5× compute: diminishing |
+| v8n, **tiles 640 px** + full frame, 640 engine | 35.2% | 59.8% | 377 | = 1280 full frame, but fixed 640 engine |
+| v8n, **tiles 320 px** (2× up) + full frame, 640 engine | **47.3%** | 56.2% | 1013 | **best**: ~9.5× the current setting |
+
+Tiling = `scripts/eval_detector.py --tile <px>` / `edge/rescue_edge/tiling.py`: overlapping
+crops (20%) through the same fixed-size model, boxes shifted back, duplicates and
+border-cut fragments merged. 320 px tiles on a 1360×765 frame = 18 tiles + 1 full pass.
+CPU times are wall clock on a cloud CPU; on the Jetson multiply-out from the per-640-run
+TensorRT time you measure.
+
 Next steps, in the order the project brief sets (YOLO stays):
 1. Pick `imgsz` / `conf_threshold` from this table and the Jetson's measured FPS; rebuild
    the TensorRT engine at that size (`detector.imgsz` must equal the export size).
