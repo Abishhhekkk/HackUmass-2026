@@ -102,16 +102,27 @@ function ZoomControls() {
   );
 }
 
-function HeatCell({ feature, people, onSelect }) {
+function HeatCell({ feature, people, onSelect, cutoffMs }) {
   const properties = feature.properties;
   const color = HEAT_COLORS[Math.min(4, Math.max(0, properties.count - 1))];
   const positions = feature.geometry.coordinates[0].map(([lon, lat]) => [lat, lon]);
   const included = (properties.person_ids || []).map((id) => people[id]).filter(Boolean);
+  // Fade (never hide) a cell when every estimated person in it was last seen before the window.
+  const old =
+    cutoffMs !== null &&
+    included.length > 0 &&
+    included.every((person) => Date.parse(person.properties.last_seen_utc) < cutoffMs);
 
   return (
     <Polygon
       positions={positions}
-      pathOptions={{ color, fillColor: color, fillOpacity: 0.22, weight: 1.5 }}
+      pathOptions={{
+        color,
+        fillColor: color,
+        fillOpacity: old ? 0.06 : 0.22,
+        opacity: old ? 0.3 : 1,
+        weight: 1.5,
+      }}
       eventHandlers={{ click: () => onSelect({ type: "cell", properties, people: included }) }}
     >
       <Tooltip sticky>
@@ -133,6 +144,7 @@ function MissionMap({ data, showCells, showPeople, showOsm, windowSeconds, onSel
     return result;
   }, [features]);
   const end = Date.parse(data?.manifest?.data_window?.end || "") || Date.now();
+  const cutoffMs = windowSeconds > 0 ? end - windowSeconds * 1000 : null;
 
   return (
     <MapContainer
@@ -162,15 +174,14 @@ function MissionMap({ data, showCells, showPeople, showOsm, windowSeconds, onSel
               feature={feature}
               people={people}
               onSelect={onSelect}
+              cutoffMs={cutoffMs}
             />
           ))}
       {showPeople &&
         Object.values(people).map((feature) => {
           const properties = feature.properties;
           const [lon, lat] = feature.geometry.coordinates;
-          const old =
-            windowSeconds > 0 &&
-            Date.parse(properties.last_seen_utc) < end - windowSeconds * 1000;
+          const old = cutoffMs !== null && Date.parse(properties.last_seen_utc) < cutoffMs;
           return (
             <Fragment key={properties.person_id}>
               <Circle
@@ -226,6 +237,63 @@ function Metric({ label, value, suffix, icon: Icon, tone }) {
         {value ?? "—"}
         {suffix && <small>{suffix}</small>}
       </div>
+    </div>
+  );
+}
+
+const UNLOCATED_REASONS = {
+  no_telemetry: "No telemetry",
+  telemetry_stale: "Telemetry too old",
+  gnss_fix_invalid: "No valid GPS fix",
+  altitude_invalid: "Invalid altitude",
+  attitude_exceeds_limit: "Drone tilted too far",
+  ray_too_oblique: "Too far off-nadir",
+  camera_resolution_mismatch: "Frame size ≠ calibration",
+};
+
+// Minimal RFC 4180 parser: the edge writes plain CSV, but quoted fields are handled anyway.
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let quoted = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i += 1; }
+      else if (c === '"') quoted = false;
+      else field += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ",") { row.push(field); field = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i += 1;
+      row.push(field); rows.push(row); row = []; field = "";
+    } else field += c;
+  }
+  if (field || row.length) { row.push(field); rows.push(row); }
+  const [header, ...body] = rows.filter((r) => r.some((value) => value !== ""));
+  return header ? body.map((r) => Object.fromEntries(header.map((key, i) => [key, r[i] ?? ""]))) : [];
+}
+
+function UnlocatedList({ rows }) {
+  if (rows === null) return <p className="muted unlocated-note">Loading…</p>;
+  if (!rows.length) {
+    return <p className="muted unlocated-note">Every sighting in this snapshot has an estimated position.</p>;
+  }
+  const shown = rows.slice(0, 25);
+  return (
+    <div className="cell-people">
+      {shown.map((row) => (
+        <div className="unlocated-row" key={row.person_id} title={`Tracks: ${row.track_ids}`}>
+          <span className="mini-dot unlocated-dot" />
+          <b>{row.person_id}</b>
+          <span>{UNLOCATED_REASONS[row.unlocated_reason] || row.unlocated_reason || "Unknown"}</span>
+          <span>{formatTime(row.last_seen_utc)}</span>
+        </div>
+      ))}
+      {rows.length > shown.length && (
+        <p className="muted unlocated-note">+{rows.length - shown.length} more in the sightings CSV</p>
+      )}
     </div>
   );
 }
@@ -1269,6 +1337,7 @@ function MissionControl() {
   const [demoBusy, setDemoBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [pipelineDetail, setPipelineDetail] = useState(null);
+  const [unlocated, setUnlocated] = useState(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -1347,6 +1416,32 @@ function MissionControl() {
   const manifest = data?.manifest;
   const summary = manifest?.summary || {};
   const edge = status?.role === "edge";
+
+  // Unlocated sightings are only in sightings.csv (the map GeoJSON has located people only).
+  // Fetch the exact snapshot version on screen, once per version.
+  const snapshotKey = manifest ? `${manifest.mission_id}@${manifest.version}` : "";
+  useEffect(() => {
+    if (!manifest) {
+      setUnlocated(null);
+      return undefined;
+    }
+    let cancelled = false;
+    fetch(`${API}/missions/${encodeURIComponent(manifest.mission_id)}/files/sightings.csv?version=${manifest.version}`)
+      .then((response) => (response.ok ? response.text() : Promise.reject(new Error(response.status))))
+      .then((text) => {
+        if (cancelled) return;
+        setUnlocated(
+          parseCsv(text)
+            .filter((row) => row.status === "unlocated_sighting")
+            .sort((a, b) => (b.last_seen_utc || "").localeCompare(a.last_seen_utc || "")),
+        );
+      })
+      .catch(() => !cancelled && setUnlocated([]));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshotKey]);
   const uploader = status?.uploader;
 
   const reportUrl = missionId
@@ -1657,6 +1752,17 @@ function MissionControl() {
                 <button className="text-button" onClick={() => setSelected(null)} disabled={!selected}>Clear</button>
               </div>
               <SelectionPanel selected={selected} onClose={() => setSelected(null)} />
+            </div>
+
+            <div className="panel-section">
+              <div className="section-heading">
+                <div><span className="eyebrow">NOT ON THE MAP</span><h2>Sightings without location ({unlocated ? unlocated.length : "…"})</h2></div>
+              </div>
+              <p className="muted unlocated-note">
+                Kept with the reason no position was estimated. Never placed at the drone&apos;s
+                position; may be the same people as mapped sightings.
+              </p>
+              <UnlocatedList rows={unlocated} />
             </div>
 
             <div className="panel-section report-section">

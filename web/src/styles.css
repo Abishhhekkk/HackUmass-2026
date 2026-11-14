@@ -199,6 +199,10 @@ button:focus-visible, select:focus-visible, a:focus-visible, input:focus-visible
 .person-row { min-height: 28px; display: grid; grid-template-columns: 9px 1fr 48px 36px; align-items: center; gap: 5px; border-top: 1px solid #e9e8e0; color: #60695f; font: 9px var(--mono); }
 .person-row b { color: #3d473e; font-weight: 500; }
 .mini-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--forest); }
+.unlocated-row { min-height: 28px; display: grid; grid-template-columns: 9px 34px 1fr auto; align-items: center; gap: 6px; border-top: 1px solid #e9e8e0; color: #60695f; font: 9px var(--mono); }
+.unlocated-row b { color: #3d473e; font-weight: 500; }
+.unlocated-dot { background: transparent; border: 1px dashed #b9785d; }
+.unlocated-note { margin: 0 0 8px; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .detail-grid { display: grid; grid-template-columns: 1fr auto; gap: 9px; padding: 10px 0 2px; border-top: 1px solid var(--line); color: var(--muted); font-size: 9px; }
 .detail-grid b { color: #424d43; font: 500 9px var(--mono); text-align: right; }
 .report-section p { margin: -4px 0 10px; color: var(--muted); font-size: 10px; line-height: 1.55; }
