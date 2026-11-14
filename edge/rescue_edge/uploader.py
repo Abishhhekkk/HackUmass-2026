@@ -8,6 +8,9 @@
 * A 409 (server holds this version number with different content, e.g. edge storage was
   reset mid-mission) is NOT retried: resending the same bytes can never succeed. The
   version is parked as a conflict that needs a human; a newer local version is still sent.
+* 401 (bad API key) and 413 (snapshot too large) are configuration problems: they are
+  still retried with backoff (fixing the server side makes them succeed), but flagged as
+  needing attention with a message saying what to fix.
 """
 from __future__ import annotations
 
@@ -28,6 +31,12 @@ class UploadRejected(RuntimeError):
         self.status_code = status_code
 
 
+CONFIG_ERRORS = {
+    401: "server rejected the API key (401): check INGEST_API_KEY matches on the Jetson and server",
+    413: "snapshot is larger than the server allows (413): raise MAX_UPLOAD_BYTES on the server",
+}
+
+
 class Uploader(threading.Thread):
     def __init__(self, root: str | Path, mission_id: str, server_url: str, api_key: str | None = None,
                  offline_flag_file: str | None = None, base_backoff_s: float = 2.0,
@@ -45,6 +54,7 @@ class Uploader(threading.Thread):
         self.last_error: str | None = None
         self.corrupt_next = False  # demo hook: send a truncated file once
         self.conflict_version: int | None = None  # version the server rejected with 409
+        self.config_error: str | None = None      # 401/413: retried, but a human must fix config
         self._stop = threading.Event()
         self._wake = threading.Event()
 
@@ -69,7 +79,8 @@ class Uploader(threading.Thread):
                 "pending": local > self.state["acked_version"], "online": self.online,
                 "last_error": self.last_error, "acked_at": self.state["acked_at"],
                 "conflict_version": self.conflict_version,
-                "needs_attention": self.conflict_version is not None and local <= self.conflict_version}
+                "needs_attention": self.config_error is not None
+                or (self.conflict_version is not None and local <= self.conflict_version)}
 
     def stop(self) -> None:
         self._stop.set()
@@ -108,13 +119,14 @@ class Uploader(threading.Thread):
                 continue
             try:
                 res = self.upload_once(local)
-                self.online, self.last_error, failures = True, None, 0
+                self.online, self.last_error, self.config_error, failures = True, None, None, 0
                 # accepted / duplicate / stale all mean "server has >= this version"
                 self.state = {"acked_version": local, "acked_at": time.time(),
                               "server_status": res.get("status")}
                 self._save_state()
             except UploadRejected as e:
-                if e.status_code != 409:  # 422 checksum mismatch etc.: retry with backoff
+                if e.status_code != 409:  # 422 checksum mismatch, 401/413 config: retry with backoff
+                    self.config_error = CONFIG_ERRORS.get(e.status_code)
                     failures += 1
                     self._backoff(e, failures)
                     continue
@@ -129,7 +141,7 @@ class Uploader(threading.Thread):
 
     def _backoff(self, e: Exception, failures: int) -> None:
         self.online = not isinstance(e, requests.ConnectionError)
-        self.last_error = str(e)[:300]
+        self.last_error = self.config_error or str(e)[:300]
         delay = min(self.cap, self.base * 2 ** (failures - 1))
         self._wait(delay * random.uniform(0.7, 1.0))
 

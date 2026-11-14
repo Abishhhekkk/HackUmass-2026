@@ -347,6 +347,42 @@ def test_uploader_parks_409_conflict_instead_of_retrying(tmp_path):
         upmod.requests.post = orig_post
 
 
+@pytest.mark.parametrize("code,hint", [(401, "INGEST_API_KEY"), (413, "MAX_UPLOAD_BYTES")])
+def test_uploader_flags_config_errors_and_recovers(tmp_path, code, hint):
+    """401/413 keep retrying (a server-side fix makes them succeed) but are flagged meanwhile."""
+    from types import SimpleNamespace
+
+    import rescue_edge.uploader as upmod
+
+    edge = tmp_path / "edge"
+    make_snapshots(edge, (1,))
+    fixed = threading.Event()
+
+    def fake_post(url, files, headers, timeout):
+        if fixed.is_set():
+            return SimpleNamespace(status_code=201, json=lambda: {"status": "accepted"})
+        return SimpleNamespace(status_code=code, text="nope")
+
+    up = Uploader(edge, "m1", "http://unused", base_backoff_s=0.01, max_backoff_s=0.05, poll_s=0.05)
+    orig_post = upmod.requests.post
+    upmod.requests.post = fake_post
+    try:
+        up.start()
+        time.sleep(0.3)
+        st = up.status()
+        assert st["needs_attention"] is True and hint in st["last_error"] and st["acked_version"] == 0
+        fixed.set()  # e.g. the server's key or size limit was corrected
+        for _ in range(40):
+            if up.status()["acked_version"] == 1:
+                break
+            time.sleep(0.05)
+        st = up.status()
+        assert st["acked_version"] == 1 and st["needs_attention"] is False and st["last_error"] is None
+    finally:
+        up.stop()
+        upmod.requests.post = orig_post
+
+
 def test_uploader_sends_latest_after_outage(tmp_path, monkeypatch):
     """Real HTTP: outage -> versions pile up -> link returns -> only newest is sent, once."""
     monkeypatch.setenv("INGEST_API_KEY", "secret")
