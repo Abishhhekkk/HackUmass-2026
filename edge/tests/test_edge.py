@@ -399,3 +399,54 @@ def test_edge_dashboard_explains_missing_build_then_serves_it(tmp_path):
     (web_dir / "dist" / "index.html").write_text("<p>built dashboard</p>")
     r = client.get("/")
     assert r.status_code == 200 and "built dashboard" in r.text  # no restart needed
+
+
+def test_recorded_video_runs_through_pipeline(tmp_path):
+    """The hackathon path: a recorded clip + replayed telemetry -> located person in a snapshot.
+    Uses a tiny generated clip and a stand-in detector, so no GPU/Ultralytics is needed."""
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    from rescue_edge.main import Pipeline
+
+    w, h, fps, n, start = 640, 360, 10, 30, 2000.0
+    clip = tmp_path / "clip.mp4"
+    writer = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+    assert writer.isOpened(), "OpenCV cannot write mp4v here"
+    for i in range(n):
+        writer.write(np.full((h, w, 3), i * 5, np.uint8))
+    writer.release()
+
+    tel = tmp_path / "telemetry.csv"
+    with tel.open("w", newline="") as f:
+        cw = csv.writer(f)
+        cw.writerow(["t", "lat", "lon", "alt_agl", "hdg", "pitch", "roll", "fix", "hdop"])
+        for i in range(40):
+            cw.writerow([start - 0.5 + i * 0.1, LAT, LON, 30, 0, 0, 0, 3, 1])
+
+    cfg = {
+        "mission_id": "video-test", "storage_root": str(tmp_path / "snap"),
+        "source": {"kind": "video", "path": str(clip), "video_start_time": "1970-01-01T00:33:20Z"},
+        "telemetry": {"kind": "replay", "path": str(tel)},
+        "camera": {"width": w, "height": h, "hfov_deg": 70.0},
+        "detector": {"kind": "mock"},
+        "scheduler": {"search_stride": 1},
+    }
+    pipe = Pipeline(cfg, tmp_path)
+    seen = []
+
+    def fake_detector(frame):  # person standing at the image centre, feet at the centre pixel
+        seen.append((frame.index, frame.t, frame.image.shape))
+        return [Detection((w / 2 - 5, h / 2 - 20, w / 2 + 5, h / 2), 0.9, 1)]
+
+    pipe.detector = fake_detector
+    pipe.run()
+
+    assert len(seen) == n and seen[0][2] == (h, w, 3)
+    assert [round(t - start, 3) for _, t, _ in seen] == [round(i / fps, 3) for i in range(n)]
+    state = pipe.agg.finalize()
+    assert state.frames_processed == n and not state.unlocated
+    assert len(state.people) == 1
+    north, east = latlon_to_offset(LAT, LON, state.people[0].lat, state.people[0].lon)
+    assert math.hypot(north, east) < 0.1  # nadir camera, level drone: centre pixel is below it
+    assert latest_version(tmp_path / "snap" / "video-test") >= 1
