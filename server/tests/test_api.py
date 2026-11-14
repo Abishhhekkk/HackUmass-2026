@@ -140,17 +140,20 @@ def test_people_near_and_reports(env, monkeypatch):
     near = client.get("/api/v1/missions/m1/people/near", params={"lat": LAT, "lon": LON, "radius_m": 30}).json()
     assert [p["distance_m"] < 30 for p in near] == [True]
     assert "Mission report" in client.get("/api/v1/missions/m1/report").text
-    automated = client.get("/api/v1/missions/m1/ai-report").json()
+    # Upload alone does not create a report (rule: periodic or on demand only).
+    pending = client.get("/api/v1/missions/m1/ai-report").json()
+    assert pending["report"] is None and pending["latest_snapshot_version"] == 2
+    automated = client.post("/api/v1/missions/m1/ai-report").json()  # the dashboard button
     assert automated["generated_by"] == "deterministic"
     assert automated["human_review_required"] is True
     assert automated["snapshot_version"] == 2
     assert automated["report"]
+    stored = client.get("/api/v1/missions/m1/ai-report").json()
+    assert stored["report"] == automated["report"] and stored["stale"] is False
     assert store._conn.execute("SELECT COUNT(*) FROM heatmap_cells WHERE mission_id='m1'").fetchone()[0] > 0
     assert store._conn.execute("SELECT COUNT(*) FROM people WHERE mission_id='m1'").fetchone()[0] == 3
-    monkeypatch.setenv("GEMINI_API_KEY", "")
-    monkeypatch.setenv("GOOGLE_API_KEY", "")
-    r = client.post("/api/v1/missions/m1/ai-report").json()
-    assert r["generated_by"] == "deterministic" and r["human_review_required"]
+    r = client.post("/api/v1/missions/m1/ai-report")  # within REPORT_MIN_GAP_S
+    assert r.status_code == 429 and r.json()["retry_after_s"] >= 1
 
 
 def test_unlocated_vision_tracks_are_indexed(env):
@@ -173,20 +176,98 @@ def test_unlocated_vision_tracks_are_indexed(env):
     assert row == ("U001", 0.7, "gnss_fix_invalid")
 
 
-def test_missing_automated_report_is_generated_on_read(env):
+def test_uploads_and_reads_never_generate_reports(env):
     client, root, store = env
-    response = client.post("/api/v1/snapshots", files=files_for(root, 1), headers=H)
-    assert response.status_code == 201
-    report_file = store.snapshot_dir / "m1" / "v000001" / "ai-report.json"
-    report_file.unlink()
+    for v in (1, 2):
+        assert client.post("/api/v1/snapshots", files=files_for(root, v), headers=H).status_code == 201
+    for _ in range(3):
+        body = client.get("/api/v1/missions/m1/ai-report").json()
+        assert body["report"] is None and body["status"] == "pending"
+    assert not list((store.snapshot_dir / "m1").glob("v*/ai-report.json"))
 
-    pending = client.get("/api/v1/missions/m1/ai-report")
-    assert pending.status_code == 200
-    assert pending.json()["status"] == "pending"
-    generated = client.get("/api/v1/missions/m1/ai-report").json()
-    assert generated["generated_by"] == "deterministic"
-    assert generated["snapshot_version"] == 1
-    assert generated["report"]
+
+class FakeClock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def _manager(store, interval_s, min_gap_s=20):
+    from rescue_api.report_manager import ReportManager
+
+    calls = []
+
+    def fake_generate(store_, mission_id, version):
+        calls.append((mission_id, version))
+        d = store_.snapshot_dir / mission_id / f"v{version:06d}"
+        result = {"mission_id": mission_id, "snapshot_version": version, "status": "ready",
+                  "generated_by": "deterministic", "report": f"report v{version}",
+                  "human_review_required": True}
+        (d / "ai-report.json").write_text(json.dumps(result))
+        return result
+
+    clock = FakeClock()
+    return ReportManager(store, interval_s=interval_s, min_gap_s=min_gap_s,
+                         generate=fake_generate, clock=clock), calls, clock
+
+
+def test_periodic_reports_follow_the_interval(env):
+    client, root, store = env
+    mgr, calls, clock = _manager(store, interval_s=300)
+    client.post("/api/v1/snapshots", files=files_for(root, 1), headers=H)
+    assert mgr.tick() == [("m1", 1)]           # first report for the mission: right away
+    assert mgr.tick() == []                    # nothing new
+    client.post("/api/v1/snapshots", files=files_for(root, 2), headers=H)
+    clock.t += 120
+    assert mgr.tick() == []                    # new data, but within the interval
+    assert mgr.latest_report("m1")["snapshot_version"] == 1
+    clock.t += 200                             # 320 s since the last report
+    assert mgr.tick() == [("m1", 2)]
+    assert calls == [("m1", 1), ("m1", 2)]
+
+
+def test_on_demand_reports_are_rate_limited(env):
+    from rescue_api.report_manager import ReportRateLimited
+
+    client, root, store = env
+    mgr, calls, clock = _manager(store, interval_s=0, min_gap_s=20)
+    client.post("/api/v1/snapshots", files=files_for(root, 1), headers=H)
+    assert mgr.periodic is False
+    clock.t += 100
+    assert mgr.generate("m1", 1)["report"] == "report v1"
+    clock.t += 5
+    with pytest.raises(ReportRateLimited) as exc:
+        mgr.generate("m1", 1)
+    assert exc.value.retry_after_s == 15
+    assert mgr.status("m1")["on_demand_available_in_s"] == 15
+    clock.t += 15
+    mgr.generate("m1", 1)
+    assert calls == [("m1", 1), ("m1", 1)]
+
+
+def test_report_interval_zero_starts_no_thread(env, monkeypatch):
+    from rescue_api.report_manager import ReportManager
+
+    _, _, store = env
+    monkeypatch.setenv("REPORT_INTERVAL_S", "0")
+    mgr = ReportManager(store)
+    mgr.start()
+    assert mgr.periodic is False and mgr._thread is None
+    monkeypatch.setenv("REPORT_INTERVAL_S", "-1")
+    with pytest.raises(ValueError):
+        ReportManager(store)
+
+
+def test_stale_report_is_flagged(env):
+    client, root, store = env
+    client.post("/api/v1/snapshots", files=files_for(root, 1), headers=H)
+    client.post("/api/v1/missions/m1/ai-report")
+    client.post("/api/v1/snapshots", files=files_for(root, 2), headers=H)
+    body = client.get("/api/v1/missions/m1/ai-report").json()
+    assert body["snapshot_version"] == 1 and body["latest_snapshot_version"] == 2
+    assert body["stale"] is True
 
 
 def test_agent_tool_loop_with_fake_llm(env):

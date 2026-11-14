@@ -3,7 +3,8 @@
     uvicorn rescue_api.app:app --host 0.0.0.0 --port 8000      (from server/)
 
 Env: INGEST_API_KEY, DATABASE_URL (sqlite:///... or postgresql://...), SNAPSHOT_DIR,
-     GEMINI_API_KEY, GEMINI_MODEL, WEB_DIR, MAX_UPLOAD_BYTES
+     GEMINI_API_KEY, GEMINI_MODEL, WEB_DIR, MAX_UPLOAD_BYTES,
+     REPORT_INTERVAL_S (default 300, 0 = on demand only), REPORT_MIN_GAP_S (default 20)
 """
 from __future__ import annotations
 
@@ -15,16 +16,17 @@ import logging
 import os
 import re
 import shutil
-import threading
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from .report_manager import ReportManager, ReportRateLimited
 from .storage import Storage
 
 REPO = Path(__file__).resolve().parents[2]
@@ -86,78 +88,29 @@ class MissionQuestion(BaseModel):
         return value.strip()
 
 
-def _generate_automated_report(store: Storage, mission_id: str, version: int) -> None:
-    """Create the post-upload report without holding up the drone's upload response."""
-    row = store.snapshot_row(mission_id, version)
-    if not row:
-        log.error("cannot generate report for missing mission snapshot %s v%d", mission_id, version)
-        return
-    directory = store.snapshot_dir / mission_id / f"v{version:06d}"
-    try:
-        deterministic = (directory / "report.md").read_text(encoding="utf-8")
-        from .agent import generate_report
-
-        result = generate_report(store, mission_id, row, deterministic)
-        report_text = result["report"]
-        (directory / "ai-report.md").write_text(report_text, encoding="utf-8")
-        (directory / "ai-report.json").write_text(
-            json.dumps(result, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
-        )
-        log.info(
-            "automated report ready for %s v%d (%s)",
-            mission_id, version, result.get("generated_by", "unknown"),
-        )
-    except Exception:
-        log.exception("automated report generation failed for %s v%d", mission_id, version)
-        try:
-            (directory / "ai-report.json").write_text(
-                json.dumps({
-                    "mission_id": mission_id,
-                    "snapshot_version": version,
-                    "status": "failed",
-                    "generated_by": None,
-                    "report": None,
-                    "error": "Report generation failed; check cloud service logs.",
-                    "human_review_required": True,
-                }, separators=(",", ":")),
-                encoding="utf-8",
-            )
-        except OSError:
-            log.exception("could not persist report failure state for %s v%d", mission_id, version)
-
-
-def _run_scheduled_report(store: Storage, mission_id: str, version: int, jobs: set, lock: threading.Lock) -> None:
-    key = (mission_id, version)
-    try:
-        _generate_automated_report(store, mission_id, version)
-    finally:
-        with lock:
-            jobs.discard(key)
-
-
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def create_app(storage: Storage | None = None) -> FastAPI:
-    app = FastAPI(title="RescueSight cloud API")
     store = storage or Storage(os.environ.get("DATABASE_URL", f"sqlite:///{REPO / 'data/cloud/rescue.db'}"),
                                os.environ.get("SNAPSHOT_DIR", str(REPO / "data/cloud/snapshots")))
+    # Reports are periodic or on demand, never per upload (see report_manager.py).
+    reports = ReportManager(store)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        reports.start()  # no-op when REPORT_INTERVAL_S=0
+        try:
+            yield
+        finally:
+            reports.stop()
+
+    app = FastAPI(title="RescueSight cloud API", lifespan=lifespan)
     app.state.store = store
+    app.state.reports = reports
     api_key = os.environ.get("INGEST_API_KEY")
     max_bytes = int(os.environ.get("MAX_UPLOAD_BYTES", 10 * 1024 * 1024))
-    report_jobs: set[tuple[str, int]] = set()
-    report_jobs_lock = threading.Lock()
-
-    def schedule_report(background_tasks: BackgroundTasks, mission_id: str, version: int) -> None:
-        key = (mission_id, version)
-        with report_jobs_lock:
-            if key in report_jobs:
-                return
-            report_jobs.add(key)
-        background_tasks.add_task(
-            _run_scheduled_report, store, mission_id, version, report_jobs, report_jobs_lock
-        )
 
     def require_key(x_api_key: Annotated[str | None, Header()] = None):
         if api_key and not (x_api_key and hmac.compare_digest(x_api_key, api_key)):
@@ -173,7 +126,6 @@ def create_app(storage: Storage | None = None) -> FastAPI:
 
     @app.post("/api/v1/snapshots", dependencies=[Depends(require_key)])
     async def ingest(
-        background_tasks: BackgroundTasks,
         manifest: UploadFile = File(...),
         files: list[UploadFile] = File(default=[]),
     ):
@@ -222,7 +174,6 @@ def create_app(storage: Storage | None = None) -> FastAPI:
             store.insert_snapshot(
                 cur, manifest_dict, received, got["sightings.csv"], got["heatmap.geojson"]
             )
-        schedule_report(background_tasks, m.mission_id, m.version)
         return JSONResponse({"status": "accepted", "latest_version": m.version, "received_at": received},
                             status_code=201)
 
@@ -264,20 +215,25 @@ def create_app(storage: Storage | None = None) -> FastAPI:
         return _path(mission_id, row["version"], "report.md").read_text()
 
     @app.get("/api/v1/missions/{mission_id}/ai-report")
-    def automated_report(mission_id: str, background_tasks: BackgroundTasks):
+    def automated_report(mission_id: str):
+        """Newest stored report. Reading never triggers generation."""
         row = _row(mission_id)
-        report_path = _path(mission_id, row["version"], "ai-report.json")
-        if not report_path.is_file():
-            schedule_report(background_tasks, mission_id, row["version"])
+        schedule = reports.status(mission_id)
+        stored = reports.latest_report(mission_id)
+        if stored is None:
             return {
                 "mission_id": mission_id,
-                "snapshot_version": row["version"],
-                "status": "pending",
+                "snapshot_version": None,
+                "latest_snapshot_version": row["version"],
+                "status": "pending" if reports.periodic else "none",
                 "report": None,
                 "generated_by": None,
                 "human_review_required": True,
+                "schedule": schedule,
             }
-        return json.loads(report_path.read_text(encoding="utf-8"))
+        return {**stored, "latest_snapshot_version": row["version"],
+                "stale": (stored.get("snapshot_version") or 0) < row["version"],
+                "schedule": schedule}
 
     @app.get("/api/v1/missions/{mission_id}/people/near")
     def near(mission_id: str, lat: float = Query(ge=-90, le=90), lon: float = Query(ge=-180, le=180),
@@ -287,11 +243,18 @@ def create_app(storage: Storage | None = None) -> FastAPI:
 
     @app.post("/api/v1/missions/{mission_id}/ai-report")
     def ai_report(mission_id: str):
-        from .agent import generate_report
-
+        """On demand (dashboard button): report on the newest snapshot now, rate-limited."""
         row = _row(mission_id)
-        deterministic = _path(mission_id, row["version"], "report.md").read_text()
-        return generate_report(store, mission_id, row, deterministic)
+        try:
+            result = reports.generate(mission_id, row["version"])
+        except ReportRateLimited as e:
+            return JSONResponse(
+                {"detail": f"{e.reason}; try again in {e.retry_after_s} s",
+                 "retry_after_s": e.retry_after_s},
+                status_code=429, headers={"Retry-After": str(e.retry_after_s)},
+            )
+        return {**result, "latest_snapshot_version": row["version"], "stale": False,
+                "schedule": reports.status(mission_id)}
 
     @app.get("/api/v1/ai/status")
     def ai_status():

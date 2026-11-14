@@ -68,16 +68,30 @@ Run under `tmux` or a systemd unit. Put Caddy in front for HTTPS, or secure the 
 appropriate firewall rules. Set the same ingest key on the Jetson and point its uploader at
 the instance.
 
-## Gemini report (optional)
+## Gemini report
 
 Install `server/requirements-ai.txt` and set `GEMINI_API_KEY` (optionally `GEMINI_MODEL`, default
 `gemini-2.5-flash`; verify that model is available for your key). For local development, the
 backend reads those values from the repository-root `.env` file or process environment; Vite
-does not load or bundle the root file. The cloud dashboard's AI summary calls
-After a snapshot upload is accepted, the cloud API automatically schedules a mission report.
-The dashboard polls `GET /api/v1/missions/<id>/ai-report` and presents it when ready; the report
-uses the allow-listed, read-only mission tools, including frame-aligned drone GPS, sightings,
-data gaps, and OpenStreetMap landmarks. Without an available Gemini integration/key, it records
-a deterministic report instead. Mission Q&A calls `POST /api/v1/missions/<id>/ask`; the
-on-demand report endpoint is `POST /api/v1/missions/<id>/ai-report`. Reports are optional cloud
-outputs and do not participate in onboard inference or snapshot creation.
+does not load or bundle the root file.
+
+Reports are **periodic or on demand, never per upload** (the edge can send a snapshot every
+~10 s; one LLM call per snapshot would be slow, costly and redundant):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `REPORT_INTERVAL_S` | `300` | Every this many seconds, report on each mission whose newest snapshot has no report yet. `0` = on demand only. |
+| `REPORT_MIN_GAP_S` | `20` | Minimum time between reports for one mission; the dashboard button gets `429` with `retry_after_s` if pressed sooner. |
+
+* `GET /api/v1/missions/<id>/ai-report` returns the newest stored report (it never triggers
+  generation), with `snapshot_version`, `latest_snapshot_version` and `stale: true` when newer
+  data has arrived since. The dashboard shows that.
+* `POST /api/v1/missions/<id>/ai-report` (the *Generate fresh summary* button) reports on the
+  newest snapshot immediately, subject to `REPORT_MIN_GAP_S`.
+* Each report is stored next to the snapshot it describes (`vNNNNNN/ai-report.json`, `.md`).
+
+The report uses only the allow-listed, read-only mission tools (frame-aligned drone GPS,
+sightings, data gaps, OpenStreetMap landmarks). If Gemini is unavailable (no key, no network,
+an error), the deterministic report is stored instead and labelled as such. Mission Q&A is
+`POST /api/v1/missions/<id>/ask`. Reports run in the cloud only and never affect onboard
+inference or snapshot creation.
