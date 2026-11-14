@@ -87,6 +87,19 @@ def test_truncated_upload_rejected_and_nothing_stored(env):
     assert client.get("/api/v1/missions/m1/latest").status_code == 404
 
 
+def test_snapshot_missing_required_file_is_422_not_500(env):
+    """A consistent manifest that simply omits sightings.csv used to crash ingest (500)."""
+    client, root, store = env
+    files = files_for(root, 1)
+    m = json.loads(files[0][1][1])
+    m["files"] = [f for f in m["files"] if f["name"] != "sightings.csv"]
+    files = [("manifest", ("manifest.json", json.dumps(m).encode(), "application/json"))] + [
+        f for f in files[1:] if f[1][0] != "sightings.csv"]
+    r = client.post("/api/v1/snapshots", files=files, headers=H)
+    assert r.status_code == 422 and "sightings.csv" in r.text
+    assert store.missions() == []
+
+
 def test_postgres_url_without_driver_gives_clear_error(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "psycopg", None)  # simulate the driver not installed
     with pytest.raises(RuntimeError, match="requirements-postgres.txt"):

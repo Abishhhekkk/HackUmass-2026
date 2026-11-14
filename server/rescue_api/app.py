@@ -41,6 +41,7 @@ npm run build</pre>
 <a href="/api/v1/status">/api/v1/status</a>.</p></body>"""
 
 ALLOWED_FILES = {"sightings.csv", "heatmap.geojson", "report.md", "telemetry.json", "ai-report.md"}
+REQUIRED_FILES = {"sightings.csv", "heatmap.geojson", "report.md"}  # ingest and reads depend on them
 ID_RE = r"^[A-Za-z0-9._-]{1,80}$"
 RESERVED_IDS = {".", ".."}  # match ID_RE but are directory references, not names
 
@@ -192,6 +193,8 @@ def create_app(storage: Storage | None = None) -> FastAPI:
         expected = {fe.name: fe for fe in m.files}
         if set(expected) != set(got) or not set(got) <= ALLOWED_FILES:
             raise HTTPException(422, f"file set mismatch: expected {sorted(expected)}, got {sorted(got)}")
+        if missing := REQUIRED_FILES - set(expected):
+            raise HTTPException(422, f"snapshot is missing required files: {sorted(missing)}")
         for name, fe in expected.items():
             if len(got[name]) != fe.bytes or hashlib.sha256(got[name]).hexdigest() != fe.sha256:
                 # most likely a transfer cut short; the Jetson will retry
