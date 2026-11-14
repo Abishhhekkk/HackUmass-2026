@@ -66,7 +66,7 @@ For your own footage (1920 px frame, 70° lens, nadir), a standing person's shou
 
 | Change | Recall | Precision | CPU ms/img | What it shows |
 |---|---|---|---|---|
-| Current config: v8n, 640 full frame, conf 0.35 | 5.0% | 83.1% | 34 | baseline |
+| Old config: v8n, 640 full frame, conf 0.35 | 5.0% | 83.1% | 34 | baseline |
 | v8n, 640 full frame, conf 0.10 | 13.9% | 54.3% | 34 | threshold alone: ~3× |
 | v8n, 1280 full frame | 33.4% | 54.9% | 120 | native resolution |
 | v8n, 1280, scored at IoU 0.3 | 37.4% | 61.5% | 120 | misses are real, not loose boxes |
@@ -74,21 +74,22 @@ For your own footage (1920 px frame, 70° lens, nadir), a standing person's shou
 | v8s, 1280 | 40.1% | 61.2% | 268 | bigger model: +7 pts for 2.3× compute |
 | v8m, 1280 | 41.7% | 71.2% | 638 | +8 pts for 5.5× compute: diminishing |
 | v8n, **tiles 640 px** + full frame, 640 engine | 35.2% | 59.8% | 377 | = 1280 full frame, but fixed 640 engine |
-| v8n, **tiles 320 px** (2× up) + full frame, 640 engine | **47.3%** | 56.2% | 1013 | **best**: ~9.5× the current setting |
+| v8n, **tiles 320 px** (2× up) + full frame, 640 engine | **47.5%** | 61.2% | 896 | **best**: ~9.5× the old setting; now the Jetson config |
 
 Tiling = `scripts/eval_detector.py --tile <px>` / `edge/rescue_edge/tiling.py`: overlapping
-crops (20%) through the same fixed-size model, boxes shifted back, duplicates and
-border-cut fragments merged. 320 px tiles on a 1360×765 frame = 18 tiles + 1 full pass.
+crops (20%) through the same fixed-size model, boxes shifted back, boxes cut by an inner
+tile edge dropped (the neighbour tile or the full-frame pass sees that person whole; without
+this a person larger than a tile came back as several fragments: the tiles-320 row was 56.2%
+precision before, 61.2% after, same recall), duplicates merged. 320 px tiles on a 1360×765 frame = 18 tiles + 1 full pass.
 CPU times are wall clock on a cloud CPU; on the Jetson multiply-out from the per-640-run
 TensorRT time you measure.
 
-Next steps (YOLO stays, per the project brief), by measured gain:
-1. **Tiling with the 640 engine** (biggest measured gain, no new model): wire
-   `tiling.predict_tiled` into the edge detector, with tracking on the merged boxes.
-2. **Lower `conf_threshold` to ~0.10–0.25**: free; the tracker's `min_frames` and human
-   review absorb the extra false alarms.
-3. **Fly lower** (15–30 m) in the footage you record, and check it with your own labelled
-   frames (`--format yolo`).
-4. **Aerial-trained weights**: fine-tune YOLOv8n on VisDrone train on a GPU (not possible on
-   this CPU-only machine; untested here), then `person_classes: [0, 1]`.
-5. A bigger COCO model (v8s/v8m) only if the Jetson has time to spare: small gain per cost.
+Done: `config/edge.jetson.yaml` now uses tiles of 320 px and `conf_threshold: 0.10`
+(`rescue_edge/detector.py: TiledYoloTracker`, ByteTrack on the merged boxes).
+
+Next steps (YOLO stays, per the project brief):
+1. **Measure FPS on the Jetson** with the TensorRT engine (`docs/hardware.md`, step 5). If 33
+   engine runs per 1080p frame is too slow, use `tile: 480` (16 runs) or `640` (9 runs).
+2. **Aerial-trained weights**: fine-tune YOLOv8n on VisDrone train. The Orin Nano's GPU can
+   train, slowly (expect hours); re-export the engine afterwards. Untested here.
+3. A bigger COCO model (v8s/v8m) only if the Jetson has time to spare: small gain per cost.

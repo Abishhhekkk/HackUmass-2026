@@ -30,10 +30,21 @@ camera:
 detector:
   kind: yolo
   model_path: models/yolov8n.engine   # build on the Jetson: see docs/hardware.md
-  imgsz: 640
-  conf_threshold: 0.35
+  imgsz: 640              # must equal the engine's export size
+  # 0.10 = ByteTrack's low threshold: new tracks still need a >= 0.25 detection, but a tracked
+  # person is not lost when their score dips. 0.35 discarded most aerial people
+  # (docs/detector-eval.md: 5% recall at 640/0.35).
+  conf_threshold: 0.10
   device: 0
   tracker: bytetrack.yaml
+  # Tiled detection for small, distant people: overlapping 320 px crops, each run through the
+  # same 640 engine (2x enlargement), plus one full-frame pass for near/large people.
+  # VisDrone recall: 47% vs 5% (docs/detector-eval.md). Cost: one engine run per tile;
+  # a 1920x1080 frame = 32 tiles + 1. Measure FPS on the Jetson; for speed try tile: 480
+  # (15 + 1 runs) or 640 (8 + 1), or remove `tile` for whole-frame detection.
+  tile: 320
+  tile_overlap: 0.2
+  tile_full_frame: true
 
 aggregate:
   min_frames: 3

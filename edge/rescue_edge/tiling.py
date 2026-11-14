@@ -6,7 +6,11 @@ engine) on overlapping crops, so each person keeps (or gains) pixels:
 
 * ``tile_grid`` lays out overlapping windows that cover the whole frame;
 * detections from each tile are shifted back to frame coordinates;
-* ``merge_detections`` removes the duplicates that overlaps and tile borders create.
+* boxes touching a tile's *inner* edge are dropped: a small person cut there is seen whole
+  in the overlapping neighbour tile, and a large one (bigger than the overlap) by the
+  full-frame pass. Otherwise a person larger than a tile comes back as several
+  "people" (legs, torso...), which inflates counts;
+* ``merge_detections`` removes the duplicates that overlaps create.
 
 Cost is roughly one model run per tile, so choose the tile size from measured FPS.
 """
@@ -68,19 +72,39 @@ def merge_detections(boxes, scores, iou_threshold: float = 0.5,
     return boxes[keep], scores[keep]
 
 
+def _cut_by_inner_edge(b: np.ndarray, window: Window, width: int, height: int,
+                       margin: float) -> np.ndarray:
+    """Mask of tile boxes (tile coordinates) touching an edge that is not the image edge."""
+    x0, y0, x1, y1 = window
+    tw, th = x1 - x0, y1 - y0
+    cut = np.zeros(len(b), bool)
+    if x0 > 0:
+        cut |= b[:, 0] <= margin
+    if y0 > 0:
+        cut |= b[:, 1] <= margin
+    if x1 < width:
+        cut |= b[:, 2] >= tw - margin
+    if y1 < height:
+        cut |= b[:, 3] >= th - margin
+    return cut
+
+
 def predict_tiled(predict, image: np.ndarray, tile: int, overlap: float = 0.2,
-                  full_frame: bool = True) -> tuple[np.ndarray, np.ndarray]:
+                  full_frame: bool = True, edge_margin: float = 2.0) -> tuple[np.ndarray, np.ndarray]:
     """Run ``predict(crop) -> (boxes_xyxy, scores)`` on every tile (and optionally the whole
     frame, which catches people too large for one tile), shift tile boxes back into frame
     coordinates and merge duplicates."""
     h, w = image.shape[:2]
     all_boxes, all_scores = [], []
-    for x0, y0, x1, y1 in tile_grid(w, h, tile, overlap):
+    for window in tile_grid(w, h, tile, overlap):
+        x0, y0, x1, y1 = window
         b, s = predict(image[y0:y1, x0:x1])
         b = np.asarray(b, dtype=float).reshape(-1, 4)
-        if len(b):
-            all_boxes.append(b + [x0, y0, x0, y0])
-            all_scores.append(np.asarray(s, dtype=float).reshape(-1))
+        s = np.asarray(s, dtype=float).reshape(-1)
+        keep = ~_cut_by_inner_edge(b, window, w, h, edge_margin)
+        if keep.any():
+            all_boxes.append(b[keep] + [x0, y0, x0, y0])
+            all_scores.append(s[keep])
     if full_frame:
         b, s = predict(image)
         b = np.asarray(b, dtype=float).reshape(-1, 4)

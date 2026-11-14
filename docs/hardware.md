@@ -19,6 +19,9 @@ Work through these in order. Each step has a check, so you know it works before 
    Jetson still has internet: `RESCUE_YOLO_WEIGHTS=yolov8n.pt RESCUE_YOLO_DEVICE=0 python3 -m
    pytest -k real_yolo -s` (prints ms/frame). `lap` must be installed beforehand: Ultralytics
    tries to install it on first use, which fails offline in the field.
+   Repeat with `RESCUE_YOLO_TILE=320` to time **tiled** detection, which
+   `config/edge.jetson.yaml` uses (`detector.tile`). Tiling costs one engine run per tile
+   (33 per 1080p frame at 320 px): if it is too slow, try `tile: 480` (16) or `640` (9).
 6. TensorRT, built **on the Jetson**, since engines are tied to the device. The repository
    exporter defaults to YOLOv8n, FP16, batch 1, and 640x640:
    `python3 edge/export_model.py --model yolov8n.pt --output models/yolov8n.engine --imgsz 640`.
@@ -26,9 +29,10 @@ Work through these in order. Each step has a check, so you know it works before 
 7. **Check:** compare FPS and the boxes on the same clip between `.pt` and `.engine`. Write down
    the FPS, temperature and power mode. Those are your demo numbers.
 
-Aerial footage: COCO-trained YOLO struggles with small people seen from above. Before
-fine-tuning, try a higher `imgsz`, flying lower, and a lower `conf_threshold` on your own
-clip. Fine-tune on VisDrone or HERIDAL only if that still misses people.
+Aerial footage: COCO-trained YOLO struggles with small people seen from above; at 640 px
+and conf 0.35 it found 5% of people in VisDrone. The config therefore uses tiled detection and
+`conf_threshold: 0.10` (47% in the same test). Numbers and options: `docs/detector-eval.md`.
+Fine-tuning on VisDrone or HERIDAL is the next step if that still misses people.
 
 ## 2. Camera
 

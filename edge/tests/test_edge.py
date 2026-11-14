@@ -494,7 +494,9 @@ def test_real_yolo_through_pipeline(tmp_path):
         "camera": {"width": w, "height": h, "hfov_deg": 70.0},
         "detector": {"kind": "yolo", "model_path": weights,
                      "imgsz": int(os.environ.get("RESCUE_YOLO_IMGSZ", 640)),
-                     "device": os.environ.get("RESCUE_YOLO_DEVICE", "cpu")},
+                     "device": os.environ.get("RESCUE_YOLO_DEVICE", "cpu"),
+                     # RESCUE_YOLO_TILE=320 exercises tiled detection + ByteTrack on merged boxes
+                     "tile": int(os.environ.get("RESCUE_YOLO_TILE", 0)) or None},
         "scheduler": {"search_stride": 1},
     }
     pipe = Pipeline(cfg, tmp_path)
@@ -510,7 +512,8 @@ def test_real_yolo_through_pipeline(tmp_path):
     pipe.run()
     state = pipe.agg.finalize()
     steady = sorted(timings[3:])
-    print(f"\nreal YOLO: {len(state.people)} estimated people, "
+    print(f"\nreal YOLO{' tiled ' + str(cfg['detector']['tile']) if cfg['detector']['tile'] else ''}: "
+          f"{len(state.people)} estimated people, "
           f"median {1000 * steady[len(steady) // 2]:.0f} ms/frame on {cfg['detector']['device']}")
     assert pipe.agg.detections > 0 and pipe.agg.untracked < pipe.agg.detections
     assert len(state.people) >= 2  # bus.jpg has 4 people; some may merge or be too brief
