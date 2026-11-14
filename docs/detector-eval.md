@@ -82,9 +82,13 @@ border-cut fragments merged. 320 px tiles on a 1360×765 frame = 18 tiles + 1 fu
 CPU times are wall clock on a cloud CPU; on the Jetson multiply-out from the per-640-run
 TensorRT time you measure.
 
-Next steps, in the order the project brief sets (YOLO stays):
-1. Pick `imgsz` / `conf_threshold` from this table and the Jetson's measured FPS; rebuild
-   the TensorRT engine at that size (`detector.imgsz` must equal the export size).
-2. Fly lower in the footage; evaluate on your own labelled frames (`--format yolo`).
-3. Tiling (split large frames into 640 crops) if 1280 is too slow on the Jetson.
-4. VisDrone-trained YOLO weights with `person_classes: [0, 1]`.
+Next steps (YOLO stays, per the project brief), by measured gain:
+1. **Tiling with the 640 engine** (biggest measured gain, no new model): wire
+   `tiling.predict_tiled` into the edge detector, with tracking on the merged boxes.
+2. **Lower `conf_threshold` to ~0.10–0.25**: free; the tracker's `min_frames` and human
+   review absorb the extra false alarms.
+3. **Fly lower** (15–30 m) in the footage you record, and check it with your own labelled
+   frames (`--format yolo`).
+4. **Aerial-trained weights**: fine-tune YOLOv8n on VisDrone train on a GPU (not possible on
+   this CPU-only machine; untested here), then `person_classes: [0, 1]`.
+5. A bigger COCO model (v8s/v8m) only if the Jetson has time to spare: small gain per cost.
