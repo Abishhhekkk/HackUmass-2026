@@ -87,6 +87,12 @@ def test_truncated_upload_rejected_and_nothing_stored(env):
     assert client.get("/api/v1/missions/m1/latest").status_code == 404
 
 
+def test_postgres_url_without_driver_gives_clear_error(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "psycopg", None)  # simulate the driver not installed
+    with pytest.raises(RuntimeError, match="requirements-postgres.txt"):
+        Storage("postgresql://user:pw@localhost:5432/tsdb", tmp_path / "cloud")
+
+
 def test_cloud_dashboard_explains_missing_build_then_serves_it(tmp_path, monkeypatch):
     web = tmp_path / "web"
     web.mkdir()

@@ -72,7 +72,14 @@ class Storage:
         self.ph = "%s" if self.pg else "?"
         self._lock = threading.Lock()
         if self.pg:
-            import psycopg  # pip install "psycopg[binary]"
+            try:
+                import psycopg
+            except ImportError as exc:
+                raise RuntimeError(
+                    "DATABASE_URL points at Postgres/Tiger Data but the driver is not installed. "
+                    "Run: pip install -r server/requirements-postgres.txt "
+                    "(or unset DATABASE_URL to use SQLite)."
+                ) from exc
 
             self._conn = psycopg.connect(database_url, autocommit=False)
             with self._conn.cursor() as cur:

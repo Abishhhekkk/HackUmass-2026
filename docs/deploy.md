@@ -29,7 +29,7 @@ served by FastAPI; real edge controls should be used from the edge dashboard.
 1. Create a Tiger Cloud service and copy its connection string.
 2. Enable PostGIS (`CREATE EXTENSION postgis;`) if it is not already enabled. The API also tries
    to enable it at startup.
-3. Install the optional Postgres driver with `pip install "psycopg[binary]>=3.1"` and configure
+3. Install the optional Postgres driver with `pip install -r server/requirements-postgres.txt` and configure
    `DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/tsdb?sslmode=require` with your service's
    connection details. Keep real credentials out of Git and frontend code.
 4. Start the API. It applies `infra/db/tiger_schema.sql` (idempotent).
@@ -55,7 +55,7 @@ Jetson, not the cloud.
 sudo apt update && sudo apt install -y python3-pip python3-venv git
 git clone <your repo> rescue-sight && cd rescue-sight
 python3 -m venv .venv && . .venv/bin/activate
-pip install -r server/requirements.txt "psycopg[binary]>=3.1"
+pip install -r server/requirements.txt -r server/requirements-postgres.txt
 pip install -r server/requirements-ai.txt  # optional Gemini integration
 cd web && npm ci && npm run build && cd ..
 cp .env.example .env && nano .env
