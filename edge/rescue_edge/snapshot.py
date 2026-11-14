@@ -6,6 +6,7 @@ Each snapshot is the COMPLETE current state of the mission, never an increment:
       sightings.csv      one row per estimated person + rows for unlocated tracks
       heatmap.geojson    grid cells (Polygon) + people (Point) for the map
       telemetry.json     latest frame-aligned drone telemetry fix, or its unavailable reason
+      flight_path.csv    drone pose history, ~1 Hz, frame-aligned (gaps kept with a reason)
       report.md          deterministic text report
       manifest.json      written LAST; lists every file with sha256 + size
   <root>/<mission_id>/LATEST   -> "7"
@@ -27,6 +28,7 @@ from pathlib import Path
 
 from .aggregate import HEAT_FORMULA, POSITION_METHOD, MissionState
 from .report import build_report, error_stats, iso
+from .telemetry import FLIGHT_PATH_FIELDS
 
 SCHEMA_VERSION = 1
 DISCLAIMER = ("Estimated sightings for human review. Positions are approximate "
@@ -90,6 +92,14 @@ def render_geojson(state: MissionState) -> bytes:
     return json.dumps(fc, separators=(",", ":")).encode()
 
 
+def render_flight_path(rows: list[dict] | None) -> bytes:
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=FLIGHT_PATH_FIELDS, lineterminator="\n")
+    w.writeheader()
+    w.writerows(rows or [])
+    return buf.getvalue().encode()
+
+
 def render_telemetry(telemetry: dict | None) -> bytes:
     return json.dumps(
         telemetry or {"schema_version": 1, "available": False, "reason": "no_telemetry"},
@@ -110,11 +120,13 @@ class SnapshotWriter:
             self._last_hash = m.get("content_hash")
 
     def write_if_changed(self, state: MissionState, force: bool = False,
-                         telemetry: dict | None = None) -> int | None:
+                         telemetry: dict | None = None,
+                         flight_path: list[dict] | None = None) -> int | None:
         files = {
             "sightings.csv": render_csv(state),
             "heatmap.geojson": render_geojson(state),
             "telemetry.json": render_telemetry(telemetry),
+            "flight_path.csv": render_flight_path(flight_path),
         }
         content_hash = sha256_bytes(b"".join(files[k] for k in sorted(files)))
         if content_hash == self._last_hash and not force:

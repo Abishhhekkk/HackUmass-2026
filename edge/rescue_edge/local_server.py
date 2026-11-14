@@ -4,6 +4,7 @@ Exposes the same read routes as the cloud API, so web/ runs unchanged against ei
 """
 from __future__ import annotations
 
+import csv
 import json
 import re
 from pathlib import Path
@@ -26,7 +27,8 @@ npm run build</pre>
 <p>Then reload this page (no restart needed). The API itself works now, e.g.
 <a href="/api/v1/status">/api/v1/status</a>.</p></body>"""
 
-ALLOWED_FILES = {"sightings.csv", "heatmap.geojson", "report.md", "telemetry.json", "manifest.json"}
+ALLOWED_FILES = {"sightings.csv", "heatmap.geojson", "report.md", "telemetry.json", "manifest.json",
+                 "flight_path.csv"}
 
 
 class NetworkToggle(BaseModel):
@@ -101,6 +103,20 @@ def create_app(pipe, web_dir: Path) -> FastAPI:
             raise HTTPException(404, f"{name} is not present in this snapshot")
         return FileResponse(file_path, filename=f"{mission_id}-{name}")
 
+    @app.get("/api/v1/missions/{mission_id}/flight-path")
+    def flight_path(mission_id: str):
+        """Same response as the cloud route, read from the latest snapshot (no database here)."""
+        d, _ = _dir(mission_id, None)
+        path = d / "flight_path.csv"
+        rows = []
+        if path.is_file():
+            for r in csv.DictReader(path.open(newline="")):
+                valid = r["valid"] == "1"
+                rows.append({"observed_at": r["observed_at"], "valid": valid,
+                             "lat": float(r["lat"]) if valid else None,
+                             "lon": float(r["lon"]) if valid else None})
+        return flight_path_geojson(rows)
+
     @app.get("/api/v1/missions/{mission_id}/report", response_class=PlainTextResponse)
     def report(mission_id: str):
         d, _ = _dir(mission_id, None)
@@ -123,3 +139,33 @@ def mount_dashboard(app: FastAPI, dist: Path) -> None:
             await HTMLResponse(NOT_BUILT_HTML, status_code=503)(scope, receive, send)
 
     app.mount("/", dashboard, name="web")
+
+
+def flight_path_geojson(rows: list[dict]) -> dict:
+    """Mirror of rescue_api.app.flight_path_geojson (the cloud API is deployed without this
+    package). Valid fixes become LineStrings; a telemetry gap ends a segment."""
+    segments, current, gaps = [], [], 0
+    for r in rows:
+        if r["valid"] and r["lat"] is not None:
+            current.append([round(r["lon"], 7), round(r["lat"], 7)])
+            continue
+        gaps += 1
+        if len(current) >= 2:
+            segments.append(current)
+        current = []
+    if len(current) >= 2:
+        segments.append(current)
+    valid = [r for r in rows if r["valid"] and r["lat"] is not None]
+    return {
+        "type": "FeatureCollection",
+        "features": [{"type": "Feature", "geometry": {"type": "LineString", "coordinates": seg},
+                      "properties": {"kind": "drone_path"}} for seg in segments],
+        "properties": {
+            "samples": len(rows), "gap_samples": gaps,
+            "start": rows[0]["observed_at"] if rows else None,
+            "end": rows[-1]["observed_at"] if rows else None,
+            "last_valid": ({"lat": valid[-1]["lat"], "lon": valid[-1]["lon"],
+                            "observed_at": valid[-1]["observed_at"]} if valid else None),
+            "note": "Drone GPS track, not sighting locations.",
+        },
+    }

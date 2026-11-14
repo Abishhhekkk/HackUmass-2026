@@ -24,7 +24,7 @@ from .geolocate import CameraModel, ErrorModel, pixel_to_ground
 from .report import iso
 from .scheduler import AdaptiveScheduler, SchedulerConfig
 from .snapshot import SnapshotWriter
-from .telemetry import SerialTelemetryReader, TelemetryBuffer, load_csv
+from .telemetry import FlightPathRecorder, SerialTelemetryReader, TelemetryBuffer, load_csv
 from .uploader import Uploader
 
 log = logging.getLogger("rescue_edge")
@@ -68,6 +68,8 @@ class Pipeline:
         self.scheduler = AdaptiveScheduler(SchedulerConfig(**cfg.get("scheduler", {})))
         self.writer = SnapshotWriter(self.root, self.mission_id, self.drone_id)
         self.snapshot_interval_s = cfg.get("snapshot_interval_s", 10.0)
+        # Drone track for flight_path.csv -> drone_telemetry (Timescale hypertable on Tiger Data).
+        self.flight_path = FlightPathRecorder(cfg.get("flight_path_interval_s", 1.0))
 
         ucfg = cfg.get("uploader", {})
         self.uploader = None
@@ -137,7 +139,8 @@ class Pipeline:
                     "pitch_deg": pose.pitch_deg,
                     "roll_deg": pose.roll_deg,
                 })
-        v = self.writer.write_if_changed(state, force=force, telemetry=telemetry)
+        v = self.writer.write_if_changed(state, force=force, telemetry=telemetry,
+                                         flight_path=self.flight_path.rows())
         if v:
             log.info("snapshot v%d written (%d people)", v, len(state.people))
             if self.uploader:
@@ -155,6 +158,8 @@ class Pipeline:
             for frame in self._source():
                 self.agg.note_frame(frame.t)
                 self.last_frame_t = frame.t
+                if self.flight_path.due(frame.t):
+                    self.flight_path.record(frame.t, self.telemetry.at(frame.t))
                 if self.scheduler.should_process(frame.index):
                     dets = self.detector(frame)
                     look = self.telemetry.at(frame.t)

@@ -57,3 +57,34 @@ CREATE TABLE IF NOT EXISTS unlocated_sightings (
   track_ids  TEXT,
   PRIMARY KEY (mission_id, person_id)
 );
+
+-- Drone pose history from each snapshot's flight_path.csv (~1 Hz, frame-aligned).
+-- Rows with valid = false are telemetry gaps (lat/lon NULL, reason set), never guessed fixes.
+CREATE TABLE IF NOT EXISTS drone_telemetry (
+  mission_id  TEXT NOT NULL,
+  drone_id    TEXT NOT NULL,
+  observed_at TIMESTAMPTZ NOT NULL,      -- GPS-clock time of the frame the pose is aligned to
+  t_epoch     DOUBLE PRECISION NOT NULL, -- same instant as epoch seconds (used for incremental insert)
+  lat DOUBLE PRECISION,
+  lon DOUBLE PRECISION,
+  alt_agl_m   DOUBLE PRECISION,
+  heading_deg DOUBLE PRECISION,
+  pitch_deg   DOUBLE PRECISION,
+  roll_deg    DOUBLE PRECISION,
+  valid       BOOLEAN NOT NULL,
+  reason      TEXT,
+  geom geography(Point, 4326) GENERATED ALWAYS AS
+       (CASE WHEN lat IS NULL OR lon IS NULL THEN NULL
+             ELSE ST_SetSRID(ST_MakePoint(lon, lat), 4326)::geography END) STORED,
+  PRIMARY KEY (mission_id, drone_id, observed_at)   -- includes the time column, as hypertables require
+);
+
+-- On Tiger Data / TimescaleDB, make it a hypertable (time-partitioned). Plain Postgres skips this.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
+    PERFORM create_hypertable('drone_telemetry', 'observed_at',
+                              if_not_exists => TRUE, migrate_data => TRUE);
+  END IF;
+END
+$$;

@@ -154,6 +154,7 @@ button:focus-visible, select:focus-visible, a:focus-visible, input:focus-visible
 .map-legend > span { display: flex; align-items: center; gap: 5px; }
 .legend-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--forest); }
 .legend-ring { width: 9px; height: 9px; border: 1px dashed #59645b; border-radius: 50%; }
+.legend-path { width: 14px; height: 0; border-top: 2px dotted #3f6f8f; }
 .legend-scale i { width: 28px; height: 7px; border-radius: 2px; background: linear-gradient(90deg, #9caf91, #b4b17b, #c99b65, #a9574e); }
 .map-zoom { position: absolute; z-index: 500; top: 10px; right: 10px; display: grid; overflow: hidden; border: 1px solid #d4d7cf; border-radius: 4px; background: var(--paper); }
 .map-zoom button { width: 28px; height: 27px; border: 0; color: #3e493f; background: transparent; cursor: pointer; font-size: 17px; }

@@ -253,3 +253,44 @@ class SerialTelemetryReader(threading.Thread):
         finally:
             if log_file:
                 log_file.close()
+
+
+FLIGHT_PATH_FIELDS = ["observed_at", "t", "lat", "lon", "alt_agl_m", "heading_deg", "pitch_deg",
+                      "roll_deg", "valid", "reason"]
+
+
+class FlightPathRecorder:
+    """Downsampled, frame-aligned drone pose history for the snapshot's flight_path.csv.
+
+    One row at most every ``interval_s`` of flight time. Invalid/stale fixes are recorded as
+    rows with valid=0 and the reason (a gap in the track), never with a guessed position.
+    ~70 bytes per row: a one-hour mission at 1 Hz is about 250 KB.
+    """
+
+    def __init__(self, interval_s: float = 1.0):
+        if interval_s <= 0:
+            raise ValueError("flight path interval must be positive")
+        self.interval_s = interval_s
+        self._rows: list[dict] = []
+        self._last_t: float | None = None
+
+    def due(self, t: float) -> bool:
+        return self._last_t is None or t - self._last_t >= self.interval_s
+
+    def record(self, t: float, lookup: PoseLookup) -> None:
+        from .report import iso
+
+        self._last_t = t
+        p = lookup.pose
+        self._rows.append({
+            "observed_at": iso(t), "t": f"{t:.3f}",
+            "lat": f"{p.lat:.7f}" if p else "", "lon": f"{p.lon:.7f}" if p else "",
+            "alt_agl_m": f"{p.altitude_agl_m:.2f}" if p else "",
+            "heading_deg": f"{p.heading_deg:.1f}" if p else "",
+            "pitch_deg": f"{p.pitch_deg:.1f}" if p else "",
+            "roll_deg": f"{p.roll_deg:.1f}" if p else "",
+            "valid": 1 if p else 0, "reason": "" if p else (lookup.reason or "no_telemetry"),
+        })
+
+    def rows(self) -> list[dict]:
+        return list(self._rows)

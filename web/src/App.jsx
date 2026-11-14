@@ -34,6 +34,7 @@ import {
   MapContainer,
   Marker,
   Polygon,
+  Polyline,
   TileLayer,
   Tooltip,
   useMap,
@@ -166,7 +167,7 @@ function HeatCell({ feature, people, onSelect, cutoffMs }) {
   );
 }
 
-function MissionMap({ data, showCells, showPeople, showOsm, windowSeconds, onSelect }) {
+function MissionMap({ data, showCells, showPeople, showOsm, windowSeconds, onSelect, flightPath }) {
   const features = data?.heatmap?.features || [];
   const people = useMemo(() => {
     const result = {};
@@ -197,6 +198,14 @@ function MissionMap({ data, showCells, showPeople, showOsm, windowSeconds, onSel
       )}
       <FitMission features={features} />
       <ZoomControls />
+      {(flightPath?.features || []).map((segment, index) => (
+        <Polyline
+          key={`path-${index}`}
+          positions={segment.geometry.coordinates.map(([lon, lat]) => [lat, lon])}
+          pathOptions={{ color: "#3f6f8f", weight: 1.5, opacity: 0.55, dashArray: "2 6" }}
+          interactive={false}
+        />
+      ))}
       {showCells &&
         features
           .filter((feature) => feature.properties?.kind === "cell")
@@ -1405,6 +1414,7 @@ function MissionControl() {
   const [notice, setNotice] = useState("");
   const [pipelineDetail, setPipelineDetail] = useState(null);
   const [unlocated, setUnlocated] = useState(null);
+  const [flightPath, setFlightPath] = useState(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -1504,6 +1514,22 @@ function MissionControl() {
         );
       })
       .catch(() => !cancelled && setUnlocated([]));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshotKey]);
+
+  // Drone track (cloud: drone_telemetry time-series table; edge: the snapshot's flight_path.csv).
+  useEffect(() => {
+    if (!manifest) {
+      setFlightPath(null);
+      return undefined;
+    }
+    let cancelled = false;
+    getJSON(`/missions/${encodeURIComponent(manifest.mission_id)}/flight-path`)
+      .then((result) => !cancelled && setFlightPath(result))
+      .catch(() => !cancelled && setFlightPath(null));
     return () => {
       cancelled = true;
     };
@@ -1745,6 +1771,7 @@ function MissionControl() {
                   showOsm={showOsm}
                   windowSeconds={windowSeconds}
                   onSelect={setSelected}
+                  flightPath={flightPath}
                 />
               ) : (
                 <div className="map-empty">
@@ -1759,6 +1786,11 @@ function MissionControl() {
               <div className="map-legend">
                 <span><i className="legend-dot" /> Estimated sighting</span>
                 <span><i className="legend-ring" /> Position error</span>
+                {flightPath?.features?.length > 0 && (
+                  <span title={`${flightPath.properties.samples} drone GPS samples, ${flightPath.properties.gap_samples} without a valid fix (gaps)`}>
+                    <i className="legend-path" /> Drone path (not sightings)
+                  </span>
+                )}
                 {showCells && <span className="legend-scale"><i /> Density</span>}
               </div>
             </div>

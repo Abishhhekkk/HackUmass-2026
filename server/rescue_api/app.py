@@ -42,7 +42,8 @@ npm run build</pre>
 <p>Then reload this page (no restart needed). The API itself works now, e.g.
 <a href="/api/v1/status">/api/v1/status</a>.</p></body>"""
 
-ALLOWED_FILES = {"sightings.csv", "heatmap.geojson", "report.md", "telemetry.json", "ai-report.md"}
+ALLOWED_FILES = {"sightings.csv", "heatmap.geojson", "report.md", "telemetry.json", "ai-report.md",
+                 "flight_path.csv"}  # flight_path.csv is optional (older edges don't send it)
 REQUIRED_FILES = {"sightings.csv", "heatmap.geojson", "report.md"}  # ingest and reads depend on them
 ID_RE = r"^[A-Za-z0-9._-]{1,80}$"
 RESERVED_IDS = {".", ".."}  # match ID_RE but are directory references, not names
@@ -86,6 +87,36 @@ class MissionQuestion(BaseModel):
         if not value.strip():
             raise ValueError("question must not be blank")
         return value.strip()
+
+
+def flight_path_geojson(rows: list[dict]) -> dict:
+    """Valid fixes become LineString segments; a telemetry gap (invalid/stale) ends a segment
+    instead of being drawn across. The drone's track is never a sighting location."""
+    segments, current, gaps = [], [], 0
+    for r in rows:
+        if r["valid"] and r["lat"] is not None:
+            current.append([round(r["lon"], 7), round(r["lat"], 7)])
+            continue
+        gaps += 1
+        if len(current) >= 2:
+            segments.append(current)
+        current = []
+    if len(current) >= 2:
+        segments.append(current)
+    valid = [r for r in rows if r["valid"] and r["lat"] is not None]
+    return {
+        "type": "FeatureCollection",
+        "features": [{"type": "Feature", "geometry": {"type": "LineString", "coordinates": seg},
+                      "properties": {"kind": "drone_path"}} for seg in segments],
+        "properties": {
+            "samples": len(rows), "gap_samples": gaps,
+            "start": rows[0]["observed_at"] if rows else None,
+            "end": rows[-1]["observed_at"] if rows else None,
+            "last_valid": ({"lat": valid[-1]["lat"], "lon": valid[-1]["lon"],
+                            "observed_at": valid[-1]["observed_at"]} if valid else None),
+            "note": "Drone GPS track, not sighting locations.",
+        },
+    }
 
 
 def now_iso() -> str:
@@ -174,6 +205,7 @@ def create_app(storage: Storage | None = None) -> FastAPI:
             store.insert_snapshot(
                 cur, manifest_dict, received, got["sightings.csv"], got["heatmap.geojson"]
             )
+            store.insert_flight_path(cur, manifest_dict, got.get("flight_path.csv"))
         return JSONResponse({"status": "accepted", "latest_version": m.version, "received_at": received},
                             status_code=201)
 
@@ -234,6 +266,12 @@ def create_app(storage: Storage | None = None) -> FastAPI:
         return {**stored, "latest_snapshot_version": row["version"],
                 "stale": (stored.get("snapshot_version") or 0) < row["version"],
                 "schedule": schedule}
+
+    @app.get("/api/v1/missions/{mission_id}/flight-path")
+    def flight_path(mission_id: str):
+        """Drone track from the drone_telemetry time-series table, as GeoJSON."""
+        _row(mission_id)
+        return flight_path_geojson(store.flight_path(mission_id))
 
     @app.get("/api/v1/missions/{mission_id}/people/near")
     def near(mission_id: str, lat: float = Query(ge=-90, le=90), lon: float = Query(ge=-180, le=180),

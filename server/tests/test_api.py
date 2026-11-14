@@ -46,12 +46,32 @@ def files_for(root, version, corrupt=False, mission_id="m1"):
     return out
 
 
+# SQLite by default. To run the same tests against Postgres/PostGIS (Tiger Data path):
+#   RESCUE_TEST_DATABASE_URL=postgresql://user@host:port/db python -m pytest server/tests
+# The tables are emptied before each test, so point it at a throwaway database.
+TEST_PG_URL = __import__("os").environ.get("RESCUE_TEST_DATABASE_URL")
+PG_TABLES = "snapshots, people, heatmap_cells, unlocated_sightings, drone_telemetry"
+
+
+def make_store(tmp_path):
+    if not TEST_PG_URL:
+        return Storage(f"sqlite:///{tmp_path}/cloud.db", tmp_path / "cloud")
+    store = Storage(TEST_PG_URL, tmp_path / "cloud")
+    with store.tx() as cur:
+        # Earlier tests' stores may still hold an open read transaction (tests query
+        # store._conn directly), which would block TRUNCATE forever. Throwaway DB: close them.
+        cur.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND pid <> pg_backend_pid()")
+        cur.execute(f"TRUNCATE {PG_TABLES}")
+    return store
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("INGEST_API_KEY", "secret")
     monkeypatch.setenv("GEMINI_API_KEY", "")
     monkeypatch.setenv("GOOGLE_API_KEY", "")
-    store = Storage(f"sqlite:///{tmp_path}/cloud.db", tmp_path / "cloud")
+    store = make_store(tmp_path)
     client = TestClient(create_app(store))
     edge_root = tmp_path / "edge"
     make_snapshots(edge_root)
@@ -154,6 +174,56 @@ def test_people_near_and_reports(env, monkeypatch):
     assert store._conn.execute("SELECT COUNT(*) FROM people WHERE mission_id='m1'").fetchone()[0] == 3
     r = client.post("/api/v1/missions/m1/ai-report")  # within REPORT_MIN_GAP_S
     assert r.status_code == 429 and r.json()["retry_after_s"] >= 1
+
+
+def _flight_rows(n, start=1000.0, gap=()):
+    from rescue_edge.geolocate import Pose
+    from rescue_edge.telemetry import FlightPathRecorder, PoseLookup
+
+    rec = FlightPathRecorder(1.0)
+    for i in range(n):
+        lat, lon = offset_to_latlon(LAT, LON, 0, 5 * i)
+        look = (PoseLookup(None, "gnss_fix_invalid") if i in gap
+                else PoseLookup(Pose(lat, lon, 30.0, 90.0, 0.0, 0.0)))
+        rec.record(start + i, look)
+    return rec.rows()
+
+
+def test_flight_path_lands_in_time_series_table_incrementally(env):
+    """Snapshots carry the whole track; the cloud stores each pose once, gaps kept as gaps."""
+    client, _, store = env
+    root = store.snapshot_dir.parent / "fp-edge"
+    agg = Aggregator()
+    w = SnapshotWriter(root, "m1", "drone-01")
+    w.write_if_changed(agg.finalize(), flight_path=_flight_rows(5))
+    w.write_if_changed(agg.finalize(), flight_path=_flight_rows(10, gap=(6,)))  # superset of v1
+    for v in (1, 2):
+        assert client.post("/api/v1/snapshots", files=files_for(root, v), headers=H).status_code == 201
+    assert client.post("/api/v1/snapshots", files=files_for(root, 2), headers=H).json()["status"] == "duplicate"
+
+    rows = store._conn.execute(
+        "SELECT t_epoch, valid, reason, lat IS NULL FROM drone_telemetry WHERE mission_id='m1' "
+        "ORDER BY t_epoch").fetchall()
+    assert [r[0] for r in rows] == [1000.0 + i for i in range(10)]  # each pose once
+    assert rows[6][1:] == (0, "gnss_fix_invalid", 1)                # gap: no invented fix
+
+    fc = client.get("/api/v1/missions/m1/flight-path").json()
+    segs = [f["geometry"]["coordinates"] for f in fc["features"]]
+    assert [len(s) for s in segs] == [6, 3]                          # split at the gap
+    assert fc["properties"]["gap_samples"] == 1 and fc["properties"]["samples"] == 10
+    assert fc["properties"]["last_valid"]["observed_at"].endswith("Z")
+
+
+def test_snapshot_without_flight_path_still_accepted(env):
+    """Older edges don't send flight_path.csv; that must stay valid."""
+    client, root, store = env
+    files = files_for(root, 1)
+    m = json.loads(files[0][1][1])
+    m["files"] = [f for f in m["files"] if f["name"] != "flight_path.csv"]
+    files = [("manifest", ("manifest.json", json.dumps(m).encode(), "application/json"))] + [
+        f for f in files[1:] if f[1][0] != "flight_path.csv"]
+    assert client.post("/api/v1/snapshots", files=files, headers=H).status_code == 201
+    assert client.get("/api/v1/missions/m1/flight-path").json()["features"] == []
 
 
 def test_unlocated_vision_tracks_are_indexed(env):

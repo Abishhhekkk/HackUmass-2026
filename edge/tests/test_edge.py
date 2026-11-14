@@ -514,3 +514,55 @@ def test_real_yolo_through_pipeline(tmp_path):
           f"median {1000 * steady[len(steady) // 2]:.0f} ms/frame on {cfg['detector']['device']}")
     assert pipe.agg.detections > 0 and pipe.agg.untracked < pipe.agg.detections
     assert len(state.people) >= 2  # bus.jpg has 4 people; some may merge or be too brief
+
+
+def test_pipeline_records_flight_path_in_snapshot(tmp_path):
+    from rescue_edge.main import Pipeline
+
+    tel = tmp_path / "telemetry.csv"
+    with tel.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["t", "lat", "lon", "alt_agl", "hdg", "pitch", "roll", "fix", "hdop"])
+        for i in range(60):
+            w.writerow([1000 + i * 0.1, LAT, LON, 30, 0, 0, 0, 0 if 15 <= i <= 35 else 3, 1])
+    det = tmp_path / "detections.jsonl"
+    with det.open("w") as f:
+        for i in range(50):  # 5 s of frames at 10 fps
+            f.write(json.dumps({"frame": i, "t": 1000 + i * 0.1, "width": 1920, "height": 1080,
+                                "detections": []}) + "\n")
+    cfg = {"mission_id": "fp", "storage_root": str(tmp_path / "snap"),
+           "source": {"kind": "replay", "path": str(det)},
+           "telemetry": {"kind": "replay", "path": str(tel)},
+           "camera": {"width": 1920, "height": 1080, "hfov_deg": 70.0}, "detector": {"kind": "mock"}}
+    pipe = Pipeline(cfg, tmp_path)
+    pipe.run()
+    d = snapshot_dir(tmp_path / "snap", "fp", latest_version(tmp_path / "snap" / "fp"))
+    rows = list(csv.DictReader((d / "flight_path.csv").open()))
+    assert [round(float(r["t"]) - 1000, 1) for r in rows] == [0.0, 1.0, 2.0, 3.0, 4.0]  # 1 Hz
+    assert [r["valid"] for r in rows] == ["1", "1", "0", "0", "1"]
+    assert rows[2]["reason"] == "gnss_fix_invalid" and rows[2]["lat"] == ""
+    manifest = json.loads((d / "manifest.json").read_text())
+    assert "flight_path.csv" in {f["name"] for f in manifest["files"]}
+
+
+def test_edge_flight_path_route_matches_cloud_shape(tmp_path):
+    from rescue_edge.geolocate import Pose
+    from rescue_edge.telemetry import FlightPathRecorder, PoseLookup
+
+    rec = FlightPathRecorder(1.0)
+    for i in range(4):
+        rec.record(1000.0 + i, PoseLookup(Pose(LAT + i * 1e-5, LON, 30, 0)) if i != 2
+                   else PoseLookup(None, "telemetry_stale"))
+    agg = Aggregator()
+    agg.note_frame(1000.0)
+    SnapshotWriter(tmp_path / "snapshots", "m1", "drone-01").write_if_changed(
+        agg.finalize(), flight_path=rec.rows())
+
+    class Pipe:
+        root = tmp_path / "snapshots"
+        uploader = None
+
+    client = TestClient(create_app(Pipe(), tmp_path / "web"))
+    fc = client.get("/api/v1/missions/m1/flight-path").json()
+    assert fc["properties"]["samples"] == 4 and fc["properties"]["gap_samples"] == 1
+    assert [len(f["geometry"]["coordinates"]) for f in fc["features"]] == [2]  # 1-point tail dropped

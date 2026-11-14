@@ -59,6 +59,21 @@ CREATE TABLE IF NOT EXISTS unlocated_sightings (
   track_ids TEXT,
   PRIMARY KEY (mission_id, person_id)
 );
+CREATE TABLE IF NOT EXISTS drone_telemetry (
+  mission_id  TEXT NOT NULL,
+  drone_id    TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  t_epoch     DOUBLE PRECISION NOT NULL,
+  lat DOUBLE PRECISION,
+  lon DOUBLE PRECISION,
+  alt_agl_m   DOUBLE PRECISION,
+  heading_deg DOUBLE PRECISION,
+  pitch_deg   DOUBLE PRECISION,
+  roll_deg    DOUBLE PRECISION,
+  valid       BOOLEAN NOT NULL,
+  reason      TEXT,
+  PRIMARY KEY (mission_id, drone_id, observed_at)
+);
 """
 
 PG_SCHEMA_FILE = Path(__file__).resolve().parents[2] / "infra" / "db" / "tiger_schema.sql"
@@ -181,7 +196,55 @@ class Storage:
                 "(mission_id, cell_id, version, count, score, person_ids, geometry_json) "
                 "VALUES (?,?,?,?,?,?,?)"), cells)
 
+    def insert_flight_path(self, cur, manifest: dict, flight_path_csv: bytes | None) -> int:
+        """Append the snapshot's drone track to drone_telemetry (a Timescale hypertable on
+        Tiger Data). Snapshots carry the whole track, so only rows newer than what is stored
+        are inserted; ON CONFLICT makes a re-send harmless. Returns rows inserted."""
+        if not flight_path_csv:
+            return 0
+        mission_id, drone_id = manifest["mission_id"], manifest["drone_id"]
+        cur.execute(self._q("SELECT MAX(t_epoch) FROM drone_telemetry WHERE mission_id=? AND drone_id=?"),
+                    (mission_id, drone_id))
+        latest = cur.fetchone()[0]
+
+        def num(v: str):
+            return float(v) if v not in ("", None) else None
+
+        rows = []
+        for r in csv.DictReader(io.StringIO(flight_path_csv.decode())):
+            t = float(r["t"])
+            if latest is not None and t <= latest:
+                continue
+            valid = r["valid"] in ("1", "true", "True")
+            rows.append((mission_id, drone_id, r["observed_at"], t,
+                         num(r["lat"]) if valid else None, num(r["lon"]) if valid else None,
+                         num(r["alt_agl_m"]), num(r["heading_deg"]), num(r["pitch_deg"]),
+                         num(r["roll_deg"]), valid, r["reason"] or None))
+        if rows:
+            ts = "?::timestamptz" if self.pg else "?"
+            cur.executemany(self._q(
+                "INSERT INTO drone_telemetry (mission_id, drone_id, observed_at, t_epoch, lat, lon, "
+                "alt_agl_m, heading_deg, pitch_deg, roll_deg, valid, reason) "
+                f"VALUES (?,?,{ts},?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING"), rows)
+        return len(rows)
+
     # ------------------------------------------------------------------ reads
+    def flight_path(self, mission_id: str, limit: int = 20000) -> list[dict]:
+        """Drone track in time order (newest `limit` rows), from the time-series table."""
+        with self.tx() as cur:
+            cur.execute(self._q(
+                "SELECT drone_id, observed_at, t_epoch, lat, lon, alt_agl_m, heading_deg, valid, reason "
+                "FROM drone_telemetry WHERE mission_id=? ORDER BY t_epoch DESC LIMIT ?"),
+                (mission_id, limit))
+            rows = cur.fetchall()
+        out = []
+        for drone, observed, t, lat, lon, alt, hdg, valid, reason in reversed(rows):
+            if not isinstance(observed, str):  # Postgres returns datetime
+                observed = observed.isoformat().replace("+00:00", "Z")
+            out.append({"drone_id": drone, "observed_at": observed, "t": t, "lat": lat, "lon": lon,
+                        "alt_agl_m": alt, "heading_deg": hdg, "valid": bool(valid), "reason": reason})
+        return out
+
     def missions(self) -> list[dict]:
         with self.tx() as cur:
             cur.execute(

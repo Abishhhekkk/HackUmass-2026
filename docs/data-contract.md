@@ -9,6 +9,7 @@ the Jetson. It is never a delta. Newer version = replaces older.
     sightings.csv      one row per estimated person, plus rows for sightings with no location
     heatmap.geojson    grid cells (Polygon) + people (Point)
     telemetry.json     latest frame-aligned drone position and pose, or unavailable reason
+    flight_path.csv    drone pose history, about 1 Hz, frame-aligned (gaps kept with a reason)
     report.md          deterministic text report
 <storage_root>/<mission_id>/LATEST    "7"
 ```
@@ -21,7 +22,7 @@ the Jetson. It is never a delta. Newer version = replaces older.
 | `mission_id`, `drone_id` | `[A-Za-z0-9._-]{1,80}`, except `.` and `..` (IDs are directory names). Every record carries `drone_id`, so more drones can be added later |
 | `version` | integer, +1 each time the data changes. Server keeps the highest |
 | `created_at` | UTC ISO-8601, when the Jetson built the snapshot |
-| `content_hash` | sha256 of `heatmap.geojson`, `sightings.csv`, and `telemetry.json` (sorted by name, concatenated) |
+| `content_hash` | sha256 of `flight_path.csv`, `heatmap.geojson`, `sightings.csv`, and `telemetry.json` (sorted by name, concatenated) |
 | `data_window.start/end` | first/last frame time (GPS clock) |
 | `origin` | lat/lon the grid is anchored to (first located detection) |
 | `cell_size_m` | grid resolution |
@@ -61,6 +62,24 @@ not a detected person's location. A valid record has `available: true`, an ISO-8
 (`altitude_agl_m`, `heading_deg`, `pitch_deg`, `roll_deg`). If telemetry is missing or invalid,
 `available` is false and `reason` explains why; no position is invented. The artifact is
 included in each snapshot's file checksums and content hash.
+
+## flight_path.csv
+
+The drone's own track, for the cloud's `drone_telemetry` time-series table (a Timescale
+hypertable on Tiger Data) and the dashboard's "Drone path" line. **These are drone
+positions, never sighting locations.**
+
+`observed_at, t, lat, lon, alt_agl_m, heading_deg, pitch_deg, roll_deg, valid, reason`
+
+* One row at most every `flight_path_interval_s` (edge config, default 1.0) of flight time,
+  looked up from telemetry at that frame's GPS-clock time, like detections are.
+* `t` is UTC epoch seconds; `observed_at` the same instant as ISO-8601.
+* `valid = 1`: pose fields are set. `valid = 0`: no usable fix at that time; position fields
+  are empty and `reason` is one of the telemetry reasons above (`no_telemetry`,
+  `telemetry_stale`, `gnss_fix_invalid`, `altitude_invalid`). Gaps are kept, never filled.
+* The file holds the whole track so far (a snapshot is full state). The cloud inserts only
+  rows newer than what it already stored for that mission and drone, so re-sends are harmless.
+* Optional for the server: snapshots without it (older edges) are still accepted.
 
 ## Units and frames
 
