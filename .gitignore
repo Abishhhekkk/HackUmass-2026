@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+models/*
+!models/README.md
+*.engine
+*.onnx
+*.pt
+*.mp4
+*.db
+.venv/

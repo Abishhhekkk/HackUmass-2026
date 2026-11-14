@@ -1,0 +1,1 @@
+"""RescueSight edge pipeline."""
