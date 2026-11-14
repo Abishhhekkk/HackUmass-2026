@@ -80,6 +80,7 @@ class Pipeline:
         self.running = False
         self.finished = False
         self.last_frame_t: float | None = None
+        self._warned_resolution = False
 
     def _path(self, p: str) -> Path:
         p = Path(p)
@@ -99,6 +100,19 @@ class Pipeline:
             clock = self.serial_reader.now if self.serial_reader else time.time
             return CameraSource(dev, clock)
         raise ValueError(f"unknown source kind {s['kind']!r}")
+
+    def _resolution_mismatch(self, frame) -> bool:
+        """True if the frame size differs from the calibrated camera.width/height."""
+        if not frame.width or not frame.height:
+            return False  # source did not report a size
+        if (frame.width, frame.height) == (self.camera.width, self.camera.height):
+            return False
+        if not self._warned_resolution:
+            log.warning("frame is %dx%d but camera config is %dx%d: detections will be kept "
+                        "unlocated (camera_resolution_mismatch). Fix the camera: block.",
+                        frame.width, frame.height, self.camera.width, self.camera.height)
+            self._warned_resolution = True
+        return True
 
     def snapshot(self, force: bool = False) -> int | None:
         state = self.agg.finalize()
@@ -144,7 +158,14 @@ class Pipeline:
                 if self.scheduler.should_process(frame.index):
                     dets = self.detector(frame)
                     look = self.telemetry.at(frame.t)
+                    mismatch = self._resolution_mismatch(frame)
                     for d in dets:
+                        if mismatch:
+                            # Projecting with the wrong intrinsics would give confident but
+                            # wrong coordinates; keep the sighting unlocated instead.
+                            self.agg.add(frame.t, d.track_id, d.confidence, None, None, None,
+                                         "camera_resolution_mismatch")
+                            continue
                         if look.pose is None:
                             self.agg.add(frame.t, d.track_id, d.confidence, None, None, None, look.reason)
                             continue

@@ -152,6 +152,45 @@ def test_replayed_telemetry_log_is_not_truncated(tmp_path):
     assert pipe.telemetry.at(1000.05).pose is not None  # start of the flight
 
 
+def _run_replay_pipeline(tmp_path, frame_w, frame_h):
+    from rescue_edge.main import Pipeline
+
+    tel = tmp_path / "telemetry.csv"
+    with tel.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["t", "lat", "lon", "alt_agl", "hdg", "pitch", "roll", "fix", "hdop"])
+        for i in range(20):
+            w.writerow([1000 + i * 0.1, LAT, LON, 30, 0, 0, 0, 3, 1])
+    det = tmp_path / "detections.jsonl"
+    with det.open("w") as f:
+        for i in range(5):
+            f.write(json.dumps({"frame": i, "t": 1000 + i * 0.1, "width": frame_w, "height": frame_h,
+                                "detections": [{"bbox": [100, 100, 120, 140], "conf": 0.9,
+                                                "track_id": 1}]}) + "\n")
+    cfg = {
+        "mission_id": "res-test", "storage_root": str(tmp_path / "snap"),
+        "source": {"kind": "replay", "path": str(det)},
+        "telemetry": {"kind": "replay", "path": str(tel)},
+        "camera": {"width": 1920, "height": 1080, "hfov_deg": 70.0},
+        "detector": {"kind": "mock"},
+        "scheduler": {"search_stride": 1},
+    }
+    pipe = Pipeline(cfg, tmp_path)
+    pipe.run()
+    return pipe.agg.finalize()
+
+
+def test_matching_resolution_is_located(tmp_path):
+    state = _run_replay_pipeline(tmp_path, 1920, 1080)
+    assert len(state.people) == 1 and not state.unlocated
+
+
+def test_resolution_mismatch_keeps_sighting_unlocated(tmp_path):
+    state = _run_replay_pipeline(tmp_path, 1280, 720)
+    assert not state.people
+    assert [t.unlocated_reason for t in state.unlocated] == ["camera_resolution_mismatch"]
+
+
 def test_telemetry_parser_rejects_nonfinite_and_out_of_range_gps():
     with pytest.raises(ValueError, match="finite"):
         TelemetrySample.from_dict({"t": float("nan"), "lat": LAT, "lon": LON, "alt_agl": 10, "hdg": 0})
