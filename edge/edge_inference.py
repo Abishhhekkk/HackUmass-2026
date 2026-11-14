@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-"""Run person detection and frame-aligned GPS projection on a Jetson Orin Nano.
+"""Standalone detection logger: live camera + ESP32 serial -> one JSON line per detection.
 
-Run from the repository root:
+NOT the mission pipeline. This script does no tracking summaries, de-duplication, heat map,
+snapshots, upload or dashboard; its output never reaches the map. Use it to bench-test the
+TensorRT engine, camera and ESP32 telemetry together. For the demo, run the pipeline:
+
+    cd edge && python -m rescue_edge.main --config ../config/<your config>.yaml --serve
+
+Run this logger from the repository root:
     python edge/edge_inference.py --config config/edge.jetson.yaml
 """
 from __future__ import annotations

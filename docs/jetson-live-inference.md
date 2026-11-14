@@ -1,5 +1,12 @@
 # Jetson Orin Nano live inference
 
+> **This page covers `edge/edge_inference.py`, a standalone detection logger for bench
+> testing the TensorRT engine, camera and ESP32 serial link together.** It writes one JSON
+> line per detection and nothing else: no de-duplication, heat map, snapshots, upload or
+> dashboard. **For the demo, run the mission pipeline instead**, which feeds the map and the
+> cloud: `cd edge && python -m rescue_edge.main --config ../config/<config>.yaml --serve`.
+> Sections 1 and 2 (Jetson setup, engine export) apply to both.
+
 This workflow uses the edge pipeline's existing frame-aligned telemetry and nadir-camera
 projection. It reports **estimated person locations**; it is not a survey-grade coordinate
 system and must not be used as an autonomous rescue or flight-control command.
