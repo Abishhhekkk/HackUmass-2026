@@ -9,3 +9,6 @@ uvicorn>=0.27
 # live hardware only:
 pyserial>=3.5
 # ultralytics>=8.3
+# ByteTrack in Ultralytics needs `lap`, which Ultralytics only installs at runtime when first
+# tracking. An offline Jetson cannot do that and crashes on the first frame, so install it now:
+# lap>=0.5.12

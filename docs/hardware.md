@@ -12,9 +12,13 @@ Work through these in order. Each step has a check, so you know it works before 
    version. It lists the Jetson-specific PyTorch/torchvision wheels. Don't use the desktop
    `pip install torch`, which gives you a CPU-only build.
 4. Install runtime dependencies without replacing JetPack's system OpenCV or PyTorch:
-   `python3 -m pip install numpy pyyaml requests pyserial`. Keep the Jetson's OpenCV build
+   `python3 -m pip install numpy pyyaml requests pyserial "lap>=0.5.12"`. Keep the Jetson's OpenCV build
    with GStreamer, and install PyTorch/Ultralytics using the Jetson-specific instructions above.
 5. **Check:** `yolo predict model=yolov8n.pt source=<a test clip> classes=0` produces boxes.
+   Then check the full pipeline with the real detector + ByteTrack (no mocks), while the
+   Jetson still has internet: `RESCUE_YOLO_WEIGHTS=yolov8n.pt RESCUE_YOLO_DEVICE=0 python3 -m
+   pytest -k real_yolo -s` (prints ms/frame). `lap` must be installed beforehand: Ultralytics
+   tries to install it on first use, which fails offline in the field.
 6. TensorRT, built **on the Jetson**, since engines are tied to the device. The repository
    exporter defaults to YOLOv8n, FP16, batch 1, and 640x640:
    `python3 edge/export_model.py --model yolov8n.pt --output models/yolov8n.engine --imgsz 640`.

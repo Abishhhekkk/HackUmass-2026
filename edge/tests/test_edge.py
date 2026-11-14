@@ -450,3 +450,67 @@ def test_recorded_video_runs_through_pipeline(tmp_path):
     north, east = latlon_to_offset(LAT, LON, state.people[0].lat, state.people[0].lon)
     assert math.hypot(north, east) < 0.1  # nadir camera, level drone: centre pixel is below it
     assert latest_version(tmp_path / "snap" / "video-test") >= 1
+
+
+@pytest.mark.skipif(not __import__("os").environ.get("RESCUE_YOLO_WEIGHTS"),
+                    reason="set RESCUE_YOLO_WEIGHTS=path/to/yolov8n.pt or .engine to run")
+def test_real_yolo_through_pipeline(tmp_path):
+    """Opt-in smoke test of the REAL detector + ByteTrack + pipeline (no mocks).
+
+        RESCUE_YOLO_WEIGHTS=models/yolov8n.engine RESCUE_YOLO_DEVICE=0 python -m pytest -k real_yolo -s
+
+    Uses Ultralytics' bundled bus.jpg (ground-level, 4 people) as a short panning clip.
+    It proves the code path and prints ms/frame; it says nothing about aerial accuracy.
+    """
+    import os
+    from pathlib import Path
+
+    ultralytics = pytest.importorskip("ultralytics")
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    from rescue_edge.main import Pipeline
+
+    img = cv2.imread(str(Path(ultralytics.__file__).parent / "assets" / "bus.jpg"))
+    h, w = img.shape[:2]
+    clip = tmp_path / "bus.mp4"
+    writer = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), 10, (w, h))
+    for i in range(30):
+        shift = np.float32([[1, 0, i * 2], [0, 1, 0]])
+        writer.write(cv2.warpAffine(img, shift, (w, h), borderMode=cv2.BORDER_REPLICATE))
+    writer.release()
+    start = 1_794_668_400.0
+    tel = tmp_path / "tel.csv"
+    with tel.open("w", newline="") as f:
+        cw = csv.writer(f)
+        cw.writerow(["t", "lat", "lon", "alt_agl", "hdg", "pitch", "roll", "fix", "hdop"])
+        for i in range(50):
+            cw.writerow([start - 1 + i * 0.1, LAT, LON, 30, 0, 0, 0, 3, 1])
+    weights = os.environ["RESCUE_YOLO_WEIGHTS"]
+    cfg = {
+        "mission_id": "real-yolo", "storage_root": str(tmp_path / "snap"),
+        "source": {"kind": "video", "path": str(clip), "video_start_time": start},
+        "telemetry": {"kind": "replay", "path": str(tel)},
+        "camera": {"width": w, "height": h, "hfov_deg": 70.0},
+        "detector": {"kind": "yolo", "model_path": weights,
+                     "imgsz": int(os.environ.get("RESCUE_YOLO_IMGSZ", 640)),
+                     "device": os.environ.get("RESCUE_YOLO_DEVICE", "cpu")},
+        "scheduler": {"search_stride": 1},
+    }
+    pipe = Pipeline(cfg, tmp_path)
+    timings, real = [], pipe.detector
+
+    def timed(frame):
+        t0 = time.perf_counter()
+        out = real(frame)
+        timings.append(time.perf_counter() - t0)
+        return out
+
+    pipe.detector = timed
+    pipe.run()
+    state = pipe.agg.finalize()
+    steady = sorted(timings[3:])
+    print(f"\nreal YOLO: {len(state.people)} estimated people, "
+          f"median {1000 * steady[len(steady) // 2]:.0f} ms/frame on {cfg['detector']['device']}")
+    assert pipe.agg.detections > 0 and pipe.agg.untracked < pipe.agg.detections
+    assert len(state.people) >= 2  # bus.jpg has 4 people; some may merge or be too brief
