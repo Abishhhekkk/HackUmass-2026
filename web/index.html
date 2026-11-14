@@ -1,54 +1,17 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RescueSight · mission map</title>
-<link rel="icon" href="data:,">
-<link rel="stylesheet" href="vendor/leaflet.css">
-<link rel="stylesheet" href="style.css">
-</head>
-<body>
-<header>
-  <div class="brand">RescueSight <span id="role" class="pill">…</span></div>
-  <select id="mission" aria-label="Mission"></select>
-  <div id="status" class="status"></div>
-  <div id="demo" class="demo" hidden>
-    <button id="btn-link">Cut uplink</button>
-    <button id="btn-corrupt" title="Send the next upload truncated, to show the server rejects it">Corrupt next upload</button>
-  </div>
-</header>
-<div class="banner">Estimated sightings for human review. Positions are approximate (circles show the estimated error); counts are not verified people.</div>
-<main>
-  <div id="map"></div>
-  <aside>
-    <section id="summary"></section>
-    <section>
-      <h3>Show sightings</h3>
-      <label class="row">Last seen within
-        <select id="window">
-          <option value="0">whole mission</option>
-          <option value="60">last 1 min of data</option>
-          <option value="300">last 5 min of data</option>
-          <option value="900">last 15 min of data</option>
-        </select>
-      </label>
-      <label class="row"><input type="checkbox" id="show-cells" checked> Heat grid</label>
-      <label class="row"><input type="checkbox" id="show-people" checked> People + error circles</label>
-      <label class="row"><input type="checkbox" id="show-osm"> OpenStreetMap basemap (needs internet)</label>
-    </section>
-    <section id="legend"></section>
-    <section id="detail"><h3>Selection</h3><p class="muted">Click a grid cell or a person.</p></section>
-    <section>
-      <h3>Exports &amp; report</h3>
-      <div class="links" id="links"></div>
-      <button id="btn-report">Show report</button>
-      <button id="btn-ai" hidden>AI summary (Gemini)</button>
-    </section>
-  </aside>
-</main>
-<dialog id="report-dlg"><form method="dialog"><button class="close">Close</button></form><div id="report-body"></div></dialog>
-<script src="vendor/leaflet.js"></script>
-<script src="app.js"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#F4F4F0" />
+    <meta
+      name="description"
+      content="Offline-first search and rescue mission situational awareness."
+    />
+    <title>RescueSight | Mission control</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
 </html>
