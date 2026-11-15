@@ -19,7 +19,9 @@ from rescue_edge.capture import CameraSource, Frame, csi_pipeline
 from rescue_edge.detector import YoloTracker
 from rescue_edge.geolocate import CameraModel, ErrorModel, pixel_to_ground
 from rescue_edge.main import load_config
+from rescue_edge.photos import PhotoWriter
 from rescue_edge.telemetry import SerialTelemetryReader, TelemetryBuffer
+from rescue_edge.video import VideoRecorder
 
 log = logging.getLogger("rescue_edge.live_inference")
 
@@ -152,6 +154,14 @@ def main() -> int:
         telemetry,
         resolve(telemetry_cfg["log_path"]) if telemetry_cfg.get("log_path") else None,
     )
+    # Photos and video are saved on this Jetson only (config `photos:` / `video:` blocks).
+    media_root = resolve(cfg.get("storage_root", "data/edge/snapshots"))
+    mission_id = cfg.get("mission_id") or time.strftime("live-%Y%m%d-%H%M%S")
+    run_tag = time.strftime("r%Y%m%d%H%M%S")  # keeps track ids from different runs apart
+    photos = (PhotoWriter.from_config(cfg["photos"], media_root, mission_id)
+              if cfg.get("photos", {}).get("enabled") else None)
+    video = (VideoRecorder.from_config(cfg["video"], media_root, mission_id)
+             if cfg.get("video", {}).get("enabled") else None)
     output, close_output = _output_stream(args.output)
     frame_count = 0
     detection_count = 0
@@ -159,6 +169,9 @@ def main() -> int:
 
     try:
         reader.start()
+        for writer in (photos, video):
+            if writer:
+                writer.start()
         source = _camera_source(cfg, reader.now)
         log.info(
             "starting live inference: model=%s imgsz=%d camera=%s serial=%s",
@@ -169,7 +182,16 @@ def main() -> int:
         )
         for frame in source:
             frame_count += 1
-            for detection in detector(frame):
+            if video and frame.image is not None:
+                video.submit(frame.image, frame.t, frame.index)
+            detections = detector(frame)
+            if photos and detections and frame.image is not None:
+                lookup = telemetry.at(frame.t)
+                for d in detections:
+                    if d.track_id is not None:
+                        photos.submit(frame.image, frame.t, frame.index, f"{run_tag}:{d.track_id}",
+                                      d.confidence, d.bbox_xyxy, lookup.pose, lookup.reason)
+            for detection in detections:
                 record = _detection_record(
                     frame, detection, telemetry, camera, error_model, args.projection_point
                 )
@@ -190,6 +212,9 @@ def main() -> int:
     except KeyboardInterrupt:
         log.info("stopping inference on keyboard interrupt")
     finally:
+        for writer in (photos, video):
+            if writer:
+                writer.stop()
         if reader.is_alive():
             reader.stop()
             reader.join(timeout=2.0)

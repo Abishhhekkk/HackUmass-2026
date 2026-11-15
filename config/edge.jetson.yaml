@@ -58,6 +58,22 @@ photos:
   queue_size: 8           # photos waiting for the writer thread; skipped (and retried) if full
   max_photos: 500         # safety cap so a busy scene cannot fill the disk
 
+# Compressed flight video in short segments under <storage_root>/<mission_id>/video/, with a
+# frame-time log per segment so any timestamp maps to an exact frame. Stays on the drone.
+# H.264 is software-encoded (the Orin Nano has no hardware video encoder), so keep the size and
+# frame rate modest and watch temperature + dropped frames in the first test flight.
+video:
+  enabled: true
+  width: 1280             # frames are shrunk to this size; photos keep full resolution
+  height: 720
+  fps: 15                 # frames kept per second (the loop still sees every camera frame)
+  segment_s: 60           # new file every 60 s, so a power cut loses seconds, not the flight
+  codec: auto             # auto | h264 | mjpg (auto = H.264 if OpenCV has GStreamer, else MJPG)
+  bitrate_kbps: 3000      # H.264 only
+  threads: 2              # H.264 encoder threads; keep low so the detector keeps its CPU
+  queue_size: 15          # frames waiting for the encoder; skipped if it falls behind
+  min_free_gb: 2          # stop recording below this much free disk so snapshots keep working
+
 uploader:
   enabled: true
   server_url: https://YOUR-VULTR-HOST

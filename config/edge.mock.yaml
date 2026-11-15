@@ -46,6 +46,18 @@ photos:
   queue_size: 8
   max_photos: 500
 
+video:
+  enabled: false          # replay mode has no pixels; turn on with a video or camera source
+  width: 1280
+  height: 720
+  fps: 15
+  segment_s: 60
+  codec: auto
+  bitrate_kbps: 3000
+  threads: 2
+  queue_size: 15
+  min_free_gb: 2
+
 uploader:
   enabled: true
   server_url: http://127.0.0.1:8000

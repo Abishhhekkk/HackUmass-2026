@@ -58,6 +58,11 @@ class PhotoWriter(threading.Thread):
         self._halt = threading.Event()
         self._cap_logged = False
 
+    @classmethod
+    def from_config(cls, cfg: dict, root, mission_id: str) -> "PhotoWriter":
+        return cls(root, mission_id, quality=cfg.get("jpeg_quality", 90),
+                   queue_size=cfg.get("queue_size", 8), max_photos=cfg.get("max_photos", 500))
+
     # ------------------------------------------------------------------ producer side
     def submit(self, image, t: float, frame_index: int, track_key: str, confidence: float,
                bbox, pose=None, pose_reason: str | None = None) -> bool:

@@ -9,7 +9,9 @@ cloud API. All locations and counts are estimates for human review, not confirme
 rescue priorities.
 
 For Jetson engine export, live inference, and the ESP32 serial line format, see
-[docs/jetson-live-inference.md](./docs/jetson-live-inference.md).
+[docs/jetson-live-inference.md](./docs/jetson-live-inference.md). First-detection photos and
+compressed flight video are saved on the Jetson only (never uploaded) and can be matched to
+estimated coordinates by timestamp; see [docs/media-capture.md](./docs/media-capture.md).
 
 ## Run the software demo
 

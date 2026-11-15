@@ -27,8 +27,9 @@ from .scheduler import AdaptiveScheduler, SchedulerConfig
 from .snapshot import SnapshotWriter
 from .telemetry import SerialTelemetryReader, TelemetryBuffer, load_csv
 from .uploader import Uploader
+from .video import VideoRecorder
 
-log = logging.getLogger("rescue_edge")
+log =logging.getLogger("rescue_edge")
 
 
 def _parse_time(v) -> float:
@@ -75,12 +76,10 @@ class Pipeline:
                 api_key=os.environ.get(ucfg.get("api_key_env", "INGEST_API_KEY")),
                 offline_flag_file=str(self._path(ucfg["offline_flag_file"])) if ucfg.get("offline_flag_file") else None,
                 base_backoff_s=ucfg.get("base_backoff_s", 2.0), max_backoff_s=ucfg.get("max_backoff_s", 60.0))
-        pcfg = cfg.get("photos", {})
-        self.photos = None
-        if pcfg.get("enabled"):
-            self.photos = PhotoWriter(
-                self.root, self.mission_id, quality=pcfg.get("jpeg_quality", 90),
-                queue_size=pcfg.get("queue_size", 8), max_photos=pcfg.get("max_photos", 500))
+        # Photos and video stay on this device: they are never part of a snapshot upload.
+        pcfg, vcfg = cfg.get("photos", {}), cfg.get("video", {})
+        self.photos = PhotoWriter.from_config(pcfg, self.root, self.mission_id) if pcfg.get("enabled") else None
+        self.video = VideoRecorder.from_config(vcfg, self.root, self.mission_id) if vcfg.get("enabled") else None
         self.running = False
         self.finished = False
         self.last_frame_t: float | None = None
@@ -155,11 +154,15 @@ class Pipeline:
             self.uploader.start()
         if self.photos:
             self.photos.start()
+        if self.video:
+            self.video.start()
         last_snap_t = None
         try:
             for frame in self._source():
                 self.agg.note_frame(frame.t)
                 self.last_frame_t = frame.t
+                if self.video and frame.image is not None:  # every frame, before the detection stride
+                    self.video.submit(frame.image, frame.t, frame.index)
                 if self.scheduler.should_process(frame.index):
                     dets = self.detector(frame)
                     look = self.telemetry.at(frame.t)
@@ -183,6 +186,8 @@ class Pipeline:
             self.running, self.finished = False, True
             if self.photos:
                 self.photos.stop()  # flush queued photos before the mission ends
+            if self.video:
+                self.video.stop()   # close the current video segment cleanly
             if self.serial_reader and self.serial_reader.is_alive():
                 self.serial_reader.stop()
                 self.serial_reader.join(timeout=2.0)
@@ -199,6 +204,7 @@ class Pipeline:
                 "network_demo_available": bool(self.uploader and self.uploader.offline_flag),
                 "uploader": self.uploader.status() if self.uploader else None,
                 "photos": self.photos.status() if self.photos else None,
+                "video": self.video.status() if self.video else None,
                 "telemetry_samples": len(self.telemetry)}
 
 

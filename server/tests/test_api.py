@@ -87,6 +87,16 @@ def test_truncated_upload_rejected_and_nothing_stored(env):
     assert client.get("/api/v1/missions/m1/latest").status_code == 404
 
 
+def test_cloud_refuses_photos_and_video(env):
+    """Photos/video stay on the drone: the cloud only accepts the files listed in the manifest."""
+    client, root, _ = env
+    for name in ("p1_5_1794668400667.jpg", "seg_1794668400000.mkv", "photos_index.csv"):
+        files = files_for(root, 2) + [("files", (name, b"\xff\xd8\xff\xe0not-really-media", "application/octet-stream"))]
+        r = client.post("/api/v1/snapshots", files=files, headers=H)
+        assert r.status_code == 422 and "file set mismatch" in r.text
+    assert client.get("/api/v1/missions/m1/latest").status_code == 404   # nothing was stored
+
+
 def test_people_near_and_reports(env, monkeypatch):
     client, root, store = env
     client.post("/api/v1/snapshots", files=files_for(root, 2), headers=H)
