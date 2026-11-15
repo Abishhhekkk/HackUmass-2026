@@ -52,6 +52,19 @@ VisDrone (~1.6 GB), builds the tiled dataset, trains, evaluates stock vs fine-tu
 val at tiles 640 and 320, and logs everything to `runs/rescue/vultr_train.log`. The manual
 steps below are what it runs.
 
+## Option C: Kaggle notebook (free GPU)
+
+`scripts/kaggle_train.ipynb` does everything in one notebook on Kaggle's free GPU:
+1. kaggle.com → **Create → New Notebook → File → Import Notebook**, upload
+   `scripts/kaggle_train.ipynb` (download it from GitHub first).
+2. Session options: **Accelerator: GPU T4**, **Internet: On** (phone verification needed once).
+3. **Save Version → Save & Run All (Commit)**: runs in the background, browser can close.
+4. Open the finished version → **Output**: download `person-visdrone.pt` and `eval.md`.
+
+It uses Kaggle's preinstalled CUDA PyTorch (and stops if installing Ultralytics would replace
+it), keeps the 1.6 GB dataset in `/tmp`, and saves only the weights, `eval.md` and training
+plots as outputs. Quicker run: set `EPOCHS = 20`, `FRACTION = 0.5` in the first code cell.
+
 ## Option B: your laptop
 
 Use any laptop/desktop with an NVIDIA GPU. Install the CUDA build of PyTorch from
