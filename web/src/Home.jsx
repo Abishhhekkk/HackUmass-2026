@@ -5,24 +5,42 @@ import Replay from "./Replay.jsx";
 import { LINK_LABEL, NO_SERVICE, clock, num, useMission } from "./lib.jsx";
 import { Mark, Wordmark } from "./ui.jsx";
 
+// Measured results for the add-on (sources in the paragraph under the grid).
 const MEASURED = [
   {
     label: "People found",
-    note: "recall, confidence ≥ 0.25",
-    stock: 36.8,
-    ours: 72.4,
+    note: "recall on aerial footage",
+    big: "72.4",
+    unit: "%",
+    bars: [
+      { label: "Vantage", value: 72.4 },
+      { label: "Stock detector · 36.8%", value: 36.8 },
+    ],
   },
   {
-    label: "Small people found",
-    note: "under 32 × 32 px",
-    stock: 22.3,
-    ours: 66.0,
+    label: "Tracked while the drone moves",
+    note: "camera-motion compensation",
+    big: "68",
+    unit: "%",
+    bars: [
+      { label: "Vantage", value: 68 },
+      { label: "Without compensation · 20%", value: 20 },
+    ],
   },
   {
-    label: "Boxes that are people",
-    note: "precision, confidence ≥ 0.25",
-    stock: 82.9,
-    ours: 77.4,
+    label: "Results lost when the link drops",
+    note: "link cut mid-mission, then restored",
+    big: "0",
+    unit: "",
+    foot:
+      "Everything stays on the add-on while there is no signal. When a link returns, the newest version goes up, checksummed; a damaged upload is rejected and sent again.",
+  },
+  {
+    label: "Keeps up with live video",
+    note: "full pipeline, on board",
+    big: "1×",
+    unit: "real time",
+    foot: "A 63-second clip, fully processed in 63 seconds on a Jetson Orin Nano. Detection alone: 102 ms per 1080p frame.",
   },
 ];
 
@@ -304,7 +322,12 @@ export default function Home() {
       <section className="measured" id="measured">
         <div className="measured-head" data-reveal>
           <p className="label">Measured, not promised</p>
-          <h2>Trained on aerial footage, it finds twice the people.</h2>
+          <h2>One box turns any drone into a search instrument.</h2>
+          <p>
+            Vantage sits between the camera and the rescue team. It brings the onboard AI the drone
+            doesn&rsquo;t have, the memory it doesn&rsquo;t have, and the sync it can&rsquo;t do without
+            signal. No new drone, no ground link.
+          </p>
         </div>
         <div className="measured-grid">
           {MEASURED.map((row) => (
@@ -314,36 +337,28 @@ export default function Home() {
                 <span className="label">{row.note}</span>
               </div>
               <div className="metric-big mono">
-                {row.ours.toFixed(1)}
-                <small>%</small>
+                {row.big}
+                {row.unit && <small>{row.unit}</small>}
               </div>
-              <div className="bars">
-                <div className="bar ours" style={{ "--w": `${row.ours}%` }}>
-                  <span>Vantage model</span>
+              {row.bars ? (
+                <div className="bars">
+                  {row.bars.map((b, i) => (
+                    <div key={b.label} className={`bar ${i === 0 ? "ours" : "stock"}`} style={{ "--w": `${b.value}%` }}>
+                      <span>{b.label}</span>
+                    </div>
+                  ))}
                 </div>
-                <div className="bar stock" style={{ "--w": `${row.stock}%` }}>
-                  <span>Stock YOLOv8n · {row.stock.toFixed(1)}%</span>
-                </div>
-              </div>
+              ) : (
+                <p className="metric-foot">{row.foot}</p>
+              )}
             </div>
           ))}
-          <div className="metric metric-speed" data-reveal>
-            <div className="metric-top">
-              <h3>Per 1080p frame, on the drone</h3>
-              <span className="label">Jetson Orin Nano Super · TensorRT FP16</span>
-            </div>
-            <div className="metric-big mono">
-              102<small>ms</small>
-            </div>
-            <p className="metric-foot">
-              9.8 frames a second with 640 px tiles plus a full-frame pass. The scheduler needs 7.5
-              while searching.
-            </p>
-          </div>
         </div>
         <p className="measured-source">
-          Accuracy: 60 VisDrone validation images, 640 px tiles. These images also chose the training
-          epoch, so read them as approximate. Speed: measured on the Jetson with scripts/bench_detector.py.
+          People found: 60 VisDrone validation images, 640 px tiles (these images also chose the training
+          epoch, so read it as approximate). Tracking: 2,292 labelled people in moving aerial sequences,
+          on the Jetson. Link outage, real time and speed: end-to-end runs on the Jetson with uploads to
+          Tiger Data.
         </p>
       </section>
 
