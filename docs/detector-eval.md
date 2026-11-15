@@ -108,3 +108,12 @@ Next steps (YOLO stays, per the project brief):
 2. **Aerial-trained weights**: fine-tune YOLOv8n on VisDrone train. The Orin Nano's GPU can
    train, slowly (expect hours); re-export the engine afterwards. Untested here.
 3. A bigger COCO model (v8s/v8m) only if the Jetson has time to spare: small gain per cost.
+
+## Is the people COUNT right? (`scripts/eval_counting.py`)
+
+Detection recall/precision is scored per image; it cannot catch one person becoming several
+tracks. `scripts/eval_counting.py` runs the pipeline's detector + tiling + ByteTrack on aerial
+video with per-person IDs (VisDrone-MOT format) and reports, per sequence: true people,
+counted people (tracked in >= 3 evaluated frames), found, false tracks, duplicate tracks
+and the count error. Scoring is in image space; the pipeline's ground-position merge
+(`merge_radius_m`) can only lower its count further.
