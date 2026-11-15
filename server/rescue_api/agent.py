@@ -16,6 +16,7 @@ import json
 import os
 import statistics
 import csv
+import io
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -70,10 +71,10 @@ def _safe_error(error: Exception) -> str:
 
 
 def _latest_drone_gps(store, mission_id: str, version: int) -> dict:
-    path = store.snapshot_dir / mission_id / f"v{version:06d}" / "telemetry.json"
-    if not path.exists():
+    raw = store.read_file(mission_id, version, "telemetry.json")
+    if raw is None:
         return {"available": False, "reason": "snapshot_has_no_drone_telemetry"}
-    telemetry = json.loads(path.read_text())
+    telemetry = json.loads(raw)
     if not telemetry.get("available") or not telemetry.get("position"):
         return {"available": False, "reason": telemetry.get("reason", "no_valid_telemetry"),
                 "observed_at": telemetry.get("observed_at")}
@@ -122,8 +123,13 @@ out center {limit * 3};"""
 def make_tools(store, mission_id: str, row: dict):
     from langchain_core.tools import tool
 
-    snapshot_path = store.snapshot_dir / mission_id / f"v{row['version']:06d}"
-    heat_path = snapshot_path / "heatmap.geojson"
+    version = row["version"]
+
+    def snapshot_file(name: str) -> bytes:
+        data = store.read_file(mission_id, version, name)
+        if data is None:
+            raise FileNotFoundError(f"{name} is not stored for snapshot v{version}")
+        return data
 
     @tool
     def get_mission_summary() -> dict:
@@ -139,7 +145,7 @@ def make_tools(store, mission_id: str, row: dict):
     def get_densest_cells(limit: int = 5) -> list[dict]:
         """Grid cells with the most estimated people, with each cell's centre lat/lon."""
         n = int(_clamp(limit, 1, 10))
-        heat = json.loads(heat_path.read_text())
+        heat = json.loads(snapshot_file("heatmap.geojson"))
         cells = [f for f in heat["features"] if f["properties"]["kind"] == "cell"]
         cells.sort(key=lambda f: (-f["properties"]["count"], -f["properties"]["score"]))
         out = []
@@ -162,7 +168,7 @@ def make_tools(store, mission_id: str, row: dict):
         """Return the most recently observed estimated sightings in this mission.
         Coordinates are approximate and each result includes its horizontal error."""
         n = int(_clamp(limit, 1, 25))
-        heat = json.loads(heat_path.read_text())
+        heat = json.loads(snapshot_file("heatmap.geojson"))
         people = [
             {
                 **feature["properties"],
@@ -198,13 +204,12 @@ def make_tools(store, mission_id: str, row: dict):
     def get_unlocated_sightings(limit: int = 10) -> list[dict]:
         """List recent sightings that lack a valid coordinate and their recorded reason."""
         n = int(_clamp(limit, 1, 25))
-        csv_path = snapshot_path / "sightings.csv"
-        with csv_path.open(newline="", encoding="utf-8") as file:
-            rows = [
-                {"person_id": item["person_id"], "reason": item["unlocated_reason"],
-                 "last_seen_utc": item["last_seen_utc"], "confidence": float(item["confidence"])}
-                for item in csv.DictReader(file) if item["status"] == "unlocated_sighting"
-            ]
+        text = snapshot_file("sightings.csv").decode("utf-8")
+        rows = [
+            {"person_id": item["person_id"], "reason": item["unlocated_reason"],
+             "last_seen_utc": item["last_seen_utc"], "confidence": float(item["confidence"])}
+            for item in csv.DictReader(io.StringIO(text)) if item["status"] == "unlocated_sighting"
+        ]
         rows.sort(key=lambda item: item["last_seen_utc"], reverse=True)
         return rows[:n]
 

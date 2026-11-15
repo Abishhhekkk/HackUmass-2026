@@ -1,0 +1,20 @@
+# Keep the build context small and secret-free.
+.git
+.env
+**/.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+web/dist
+data
+datasets
+runs
+models
+*.pt
+*.engine
+*.onnx
+*.mp4
+*.db
+edge
+firmware
+scripts

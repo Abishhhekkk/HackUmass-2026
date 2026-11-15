@@ -40,6 +40,13 @@ overview uses live mission snapshots, exposes edge-only outage and upload-integr
 and provides a mission-scoped assistant when served by the cloud API. Gemini Q&A is read-only
 and falls back to the deterministic report when credentials or the integration are unavailable.
 
+## Cloud: FastAPI + Tiger Data
+
+The Jetson uploads snapshots over any internet link (4G/5G stick, hotspot, Wi-Fi) to a
+stateless FastAPI service that stores everything in Tiger Data. For the hackathon it runs on a
+laptop behind a free Cloudflare quick tunnel; the same container runs on any cloud host. Steps
+and an end-to-end check (`scripts/check_cloud.py`): [docs/deploy.md](./docs/deploy.md).
+
 ## Recorded footage from an existing drone
 
 RescueSight adds onboard AI and offline storage to drones that have neither: a Jetson Orin

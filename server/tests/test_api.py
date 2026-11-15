@@ -50,13 +50,13 @@ def files_for(root, version, corrupt=False, mission_id="m1"):
 #   RESCUE_TEST_DATABASE_URL=postgresql://user@host:port/db python -m pytest server/tests
 # The tables are emptied before each test, so point it at a throwaway database.
 TEST_PG_URL = __import__("os").environ.get("RESCUE_TEST_DATABASE_URL")
-PG_TABLES = "snapshots, people, heatmap_cells, unlocated_sightings, drone_telemetry"
+PG_TABLES = "snapshots, people, heatmap_cells, unlocated_sightings, drone_telemetry, snapshot_files, ai_reports"
 
 
 def make_store(tmp_path):
     if not TEST_PG_URL:
-        return Storage(f"sqlite:///{tmp_path}/cloud.db", tmp_path / "cloud")
-    store = Storage(TEST_PG_URL, tmp_path / "cloud")
+        return Storage(f"sqlite:///{tmp_path}/cloud.db")
+    store = Storage(TEST_PG_URL)
     with store.tx() as cur:
         # Earlier tests' stores may still hold an open read transaction (tests query
         # store._conn directly), which would block TRUNCATE forever. Throwaway DB: close them.
@@ -122,15 +122,16 @@ def test_snapshot_missing_required_file_is_422_not_500(env):
 
 def test_postgres_url_without_driver_gives_clear_error(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "psycopg", None)  # simulate the driver not installed
+    monkeypatch.setitem(sys.modules, "psycopg_pool", None)
     with pytest.raises(RuntimeError, match="requirements-postgres.txt"):
-        Storage("postgresql://user:pw@localhost:5432/tsdb", tmp_path / "cloud")
+        Storage("postgresql://user:pw@localhost:5432/tsdb")
 
 
 def test_cloud_dashboard_explains_missing_build_then_serves_it(tmp_path, monkeypatch):
     web = tmp_path / "web"
     web.mkdir()
     monkeypatch.setenv("WEB_DIR", str(web))
-    client = TestClient(create_app(Storage(f"sqlite:///{tmp_path}/c.db", tmp_path / "cloud")))
+    client = TestClient(create_app(Storage(f"sqlite:///{tmp_path}/c.db")))
     r = client.get("/")
     assert r.status_code == 503 and "npm run build" in r.text
     assert client.get("/api/v1/health").status_code == 200  # API routes unaffected
@@ -142,7 +143,7 @@ def test_cloud_dashboard_explains_missing_build_then_serves_it(tmp_path, monkeyp
 
 @pytest.mark.parametrize("bad_id", [".", ".."])
 def test_dot_mission_id_rejected_and_nothing_written(env, tmp_path, bad_id):
-    """'..' matches the ID character set but would write outside SNAPSHOT_DIR."""
+    """'..' matches the ID character set but is a directory reference, not a name."""
     client, root, store = env
     files = files_for(root, 1)
     m = json.loads(files[0][1][1])
@@ -150,7 +151,7 @@ def test_dot_mission_id_rejected_and_nothing_written(env, tmp_path, bad_id):
     files[0] = ("manifest", ("manifest.json", json.dumps(m).encode(), "application/json"))
     r = client.post("/api/v1/snapshots", files=files, headers=H)
     assert r.status_code == 422
-    assert not (tmp_path / "v000001").exists() and not (store.snapshot_dir / "v000001").exists()
+    assert store.fetchall("SELECT COUNT(*) FROM snapshot_files") == [(0,)]
     assert store.missions() == []
 
 
@@ -170,8 +171,8 @@ def test_people_near_and_reports(env, monkeypatch):
     assert automated["report"]
     stored = client.get("/api/v1/missions/m1/ai-report").json()
     assert stored["report"] == automated["report"] and stored["stale"] is False
-    assert store._conn.execute("SELECT COUNT(*) FROM heatmap_cells WHERE mission_id='m1'").fetchone()[0] > 0
-    assert store._conn.execute("SELECT COUNT(*) FROM people WHERE mission_id='m1'").fetchone()[0] == 3
+    assert store.fetchall("SELECT COUNT(*) FROM heatmap_cells WHERE mission_id='m1'")[0][0] > 0
+    assert store.fetchall("SELECT COUNT(*) FROM people WHERE mission_id='m1'")[0][0] == 3
     r = client.post("/api/v1/missions/m1/ai-report")  # within REPORT_MIN_GAP_S
     assert r.status_code == 429 and r.json()["retry_after_s"] >= 1
 
@@ -189,10 +190,10 @@ def _flight_rows(n, start=1000.0, gap=()):
     return rec.rows()
 
 
-def test_flight_path_lands_in_time_series_table_incrementally(env):
+def test_flight_path_lands_in_time_series_table_incrementally(env, tmp_path):
     """Snapshots carry the whole track; the cloud stores each pose once, gaps kept as gaps."""
     client, _, store = env
-    root = store.snapshot_dir.parent / "fp-edge"
+    root = tmp_path / "fp-edge"
     agg = Aggregator()
     w = SnapshotWriter(root, "m1", "drone-01")
     w.write_if_changed(agg.finalize(), flight_path=_flight_rows(5))
@@ -201,9 +202,9 @@ def test_flight_path_lands_in_time_series_table_incrementally(env):
         assert client.post("/api/v1/snapshots", files=files_for(root, v), headers=H).status_code == 201
     assert client.post("/api/v1/snapshots", files=files_for(root, 2), headers=H).json()["status"] == "duplicate"
 
-    rows = store._conn.execute(
+    rows = store.fetchall(
         "SELECT t_epoch, valid, reason, lat IS NULL FROM drone_telemetry WHERE mission_id='m1' "
-        "ORDER BY t_epoch").fetchall()
+        "ORDER BY t_epoch")
     assert [r[0] for r in rows] == [1000.0 + i for i in range(10)]  # each pose once
     assert rows[6][1:] == (0, "gnss_fix_invalid", 1)                # gap: no invented fix
 
@@ -226,9 +227,9 @@ def test_snapshot_without_flight_path_still_accepted(env):
     assert client.get("/api/v1/missions/m1/flight-path").json()["features"] == []
 
 
-def test_unlocated_vision_tracks_are_indexed(env):
+def test_unlocated_vision_tracks_are_indexed(env, tmp_path):
     client, _, store = env
-    root = store.snapshot_dir.parent / "unlocated-edge"
+    root = tmp_path / "unlocated-edge"
     aggregate = Aggregator(min_frames=3)
     for index in range(3):
         timestamp = index * 0.1
@@ -239,10 +240,10 @@ def test_unlocated_vision_tracks_are_indexed(env):
     upload_files = files_for(root, 1, mission_id="unlocated-mission")
     response = client.post("/api/v1/snapshots", files=upload_files, headers=H)
     assert response.status_code == 201
-    row = store._conn.execute(
+    row = store.fetchall(
         "SELECT person_id, confidence, reason FROM unlocated_sightings "
         "WHERE mission_id='unlocated-mission'"
-    ).fetchone()
+    )[0]
     assert row == ("U001", 0.7, "gnss_fix_invalid")
 
 
@@ -253,7 +254,7 @@ def test_uploads_and_reads_never_generate_reports(env):
     for _ in range(3):
         body = client.get("/api/v1/missions/m1/ai-report").json()
         assert body["report"] is None and body["status"] == "pending"
-    assert not list((store.snapshot_dir / "m1").glob("v*/ai-report.json"))
+    assert store.fetchall("SELECT COUNT(*) FROM ai_reports") == [(0,)]
 
 
 class FakeClock:
@@ -271,11 +272,10 @@ def _manager(store, interval_s, min_gap_s=20):
 
     def fake_generate(store_, mission_id, version):
         calls.append((mission_id, version))
-        d = store_.snapshot_dir / mission_id / f"v{version:06d}"
         result = {"mission_id": mission_id, "snapshot_version": version, "status": "ready",
                   "generated_by": "deterministic", "report": f"report v{version}",
                   "human_review_required": True}
-        (d / "ai-report.json").write_text(json.dumps(result))
+        store_.save_ai_report(mission_id, version, result)
         return result
 
     clock = FakeClock()
@@ -537,7 +537,7 @@ def test_uploader_flags_config_errors_and_recovers(tmp_path, code, hint):
 def test_uploader_sends_latest_after_outage(tmp_path, monkeypatch):
     """Real HTTP: outage -> versions pile up -> link returns -> only newest is sent, once."""
     monkeypatch.setenv("INGEST_API_KEY", "secret")
-    store = Storage(f"sqlite:///{tmp_path}/cloud.db", tmp_path / "cloud")
+    store = Storage(f"sqlite:///{tmp_path}/cloud.db")
     server = uvicorn.Server(uvicorn.Config(create_app(store), host="127.0.0.1", port=8765, log_level="error"))
     threading.Thread(target=server.run, daemon=True).start()
     while not server.started:
@@ -566,3 +566,54 @@ def test_uploader_sends_latest_after_outage(tmp_path, monkeypatch):
         up.stop()
     finally:
         server.should_exit = True
+
+
+def test_api_is_stateless_files_live_in_the_database(env, tmp_path):
+    """No file is written to the server's disk; downloads are byte-identical to the upload."""
+    import hashlib
+    import os
+
+    client, root, store = env
+    before = {p for p in tmp_path.rglob("*") if p.is_file()}
+    assert client.post("/api/v1/snapshots", files=files_for(root, 2), headers=H).status_code == 201
+    new_files = {p for p in tmp_path.rglob("*") if p.is_file()} - before
+    assert all(p.name.startswith("cloud.db") for p in new_files), new_files  # only the SQLite db itself
+    sent = (snapshot_dir(root, "m1", 2) / "sightings.csv").read_bytes()
+    r = client.get("/api/v1/missions/m1/files/sightings.csv")
+    assert r.status_code == 200 and hashlib.sha256(r.content).digest() == hashlib.sha256(sent).digest()
+    assert r.headers["content-disposition"] == 'attachment; filename="m1-sightings.csv"'
+    assert client.get("/api/v1/missions/m1/files/manifest.json").json()["version"] == 2
+    assert "Mission report" in client.get("/api/v1/missions/m1/report").text
+    assert client.get("/api/v1/missions/m1/files/ai-report.md").status_code == 404  # none yet
+    client.post("/api/v1/missions/m1/ai-report")
+    assert "Mission report" in client.get("/api/v1/missions/m1/files/ai-report.md").text
+    assert os.environ.get("RESCUE_API_NO_AUTOCREATE") == "1"  # conftest: tests never read a real .env
+
+
+def test_only_the_newest_file_versions_are_kept(env, tmp_path):
+    from rescue_api.storage import KEEP_FILE_VERSIONS
+
+    client, _, store = env
+    root = tmp_path / "many"
+    make_snapshots(root, (1, 2, 3, 4, 5))
+    for v in range(1, 6):
+        assert client.post("/api/v1/snapshots", files=files_for(root, v), headers=H).status_code == 201
+    kept = store.fetchall("SELECT DISTINCT version FROM snapshot_files WHERE mission_id='m1' ORDER BY version")
+    assert [v for (v,) in kept] == list(range(6 - KEEP_FILE_VERSIONS, 6))
+    assert store.fetchall("SELECT COUNT(*) FROM snapshots WHERE mission_id='m1'") == [(5,)]  # history kept
+    assert client.get("/api/v1/missions/m1/files/sightings.csv", params={"version": 1}).status_code == 404
+    assert client.get("/api/v1/missions/m1/latest").json()["manifest"]["version"] == 5
+
+
+@pytest.mark.skipif(not TEST_PG_URL, reason="Postgres only: set RESCUE_TEST_DATABASE_URL")
+def test_postgres_connections_closed_by_the_server_are_replaced(env):
+    """Cloud databases close idle connections; the pool must hand out a fresh one."""
+    import psycopg
+
+    client, root, store = env
+    assert client.post("/api/v1/snapshots", files=files_for(root, 1), headers=H).status_code == 201
+    with psycopg.connect(TEST_PG_URL, autocommit=True) as admin:  # kill every other connection
+        admin.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                      "WHERE datname = current_database() AND pid <> pg_backend_pid()")
+    assert [m["mission_id"] for m in client.get("/api/v1/missions").json()] == ["m1"]
+    assert client.post("/api/v1/snapshots", files=files_for(root, 2), headers=H).status_code == 201

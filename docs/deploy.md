@@ -1,72 +1,117 @@
-# Cloud deployment (Vultr + TigerData)
+# Cloud deployment: Jetson → FastAPI → Tiger Data
 
-The cloud side is optional. The drone and local dashboard continue to work without it. The
-cloud service is a small FastAPI process.
+The Jetson works with no connection at all. Whenever it has *any* internet route (a 4G/5G stick,
+a phone hotspot, Wi-Fi when it lands), its uploader sends the newest snapshot over **outgoing
+HTTPS** to the cloud API, which stores everything in **Tiger Data**:
 
-## Build the dashboard
-
-The React dashboard is built once and served as static files by either the edge or cloud API:
-
-```bash
-cd web
-npm ci
-npm run build
-cd ..
+```
+Jetson (offline-first) ── HTTPS out, whenever a link exists ──▶ FastAPI ──▶ Tiger Data
+                                                         (public URL)    (all mission data)
 ```
 
-The build is written to `web/dist`. Both API servers automatically serve that build when it
-exists. For UI development, start the cloud API (`uvicorn rescue_api.app:app --reload --port
-8000` from `server/`), run the edge service on port 8080, then run `npm run dev` in `web/`. Vite
-proxies `/api` to the cloud API and `/edge-api` to the local edge API, so mission reports stay
-cloud-backed while story-page controls can reach the edge uploader. Without a local edge service,
-those controls run as an explicitly labeled visual preview. To point all API requests at a single
-service instead, set `VITE_API_PROXY` before starting Vite. Outage toggles require the edge
-uploader's `offline_flag_file`. The production dashboard uses same-origin `/api/v1` routes when
-served by FastAPI; real edge controls should be used from the edge dashboard.
+The API is **stateless**: snapshot files, indexed rows and AI reports all live in the database
+(`server/rescue_api/storage.py`), nothing on the server's disk. So the same API runs on a laptop
+behind a free tunnel, in a container, or on Vultr, with no data loss when it restarts. The
+database password stays with the API, never on the drone. Mobile networks do not let anything
+connect *in* to the drone, which is why the Jetson only ever calls out.
 
-## TigerData (Postgres + PostGIS)
+## Option A (hackathon setup): your laptop + a Cloudflare quick tunnel
 
-1. Create a Tiger Cloud service and copy its connection string.
-2. Enable PostGIS (`CREATE EXTENSION postgis;`) if it is not already enabled. The API also tries
-   to enable it at startup.
-3. Install the optional Postgres driver with `pip install -r server/requirements-postgres.txt` and configure
-   `DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/tsdb?sslmode=require` with your service's
-   connection details. Keep real credentials out of Git and frontend code.
-4. Start the API. It applies `infra/db/tiger_schema.sql` (idempotent).
-5. Check that `GET /api/v1/health` reports `"db":"postgres"`. After an upload,
-   `/api/v1/missions/<id>/people/near?lat=..&lon=..&radius_m=100` should return rows using
-   PostGIS `ST_DWithin`.
+The laptop runs the API; a free Cloudflare quick tunnel gives it a public HTTPS address
+(`https://<random>.trycloudflare.com`) that the Jetson reaches over any internet link. No
+Cloudflare account, domain or port forwarding needed. Commands are for Windows PowerShell in
+the repo folder with the venv active (`git checkout claude && git pull`).
 
-Without `DATABASE_URL`, the API uses SQLite at `data/cloud/rescue.db`. Snapshot files are stored
-on the server filesystem under `data/cloud/snapshots`; Vultr Object Storage is not wired in.
+### 1. Tiger Data
+In the Tiger Cloud console, create (or open) a service and copy its **connection string**
+(`postgresql://USER:PASSWORD@HOST:PORT/tsdb?sslmode=require`). The API creates its tables
+itself at start, turns `drone_telemetry` into a hypertable, and enables PostGIS. If start-up
+fails with a permission error about `postgis`, run `CREATE EXTENSION IF NOT EXISTS postgis;`
+once in the console's SQL editor.
 
-The current cloud data includes time-stamped located sightings, unlocated track summaries, and
-aggregated heatmap-cell polygons from each accepted snapshot, alongside versioned snapshot
-metadata. PostGIS powers spatial queries for the map and agent. Raw video is not uploaded or
-stored in TigerData. Hypertables may be useful later if the project begins storing high-volume
-telemetry; they are not currently used.
+### 2. API settings (`.env` in the repo root, never committed)
+```powershell
+pip install -r server/requirements.txt -r server/requirements-postgres.txt
+copy .env.example .env
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+notepad .env
+```
+In `.env`: set `INGEST_API_KEY` to the printed key and `DATABASE_URL` to the connection string
+(uncomment it). The key is mandatory once the API is public: uploads without it are refused.
+Optional: `pip install -r server/requirements-ai.txt` and `GEMINI_API_KEY` for AI reports.
 
-## Vultr
+### 3. Dashboard (optional, needs Node.js LTS)
+```powershell
+cd web; npm ci; npm run build; cd ..
+```
 
-A small Cloud Compute instance (1 vCPU / 1–2 GB, Ubuntu) is sufficient; inference runs on the
-Jetson, not the cloud.
+### 4. Start the API (window 1, keep open)
+```powershell
+cd server; uvicorn rescue_api.app:app --host 127.0.0.1 --port 8000
+```
+`127.0.0.1` is enough (the tunnel connects locally; no Windows firewall prompt). Check
+http://127.0.0.1:8000/api/v1/health shows `"db":"postgres"`, then (window 2, repo root):
+```powershell
+python scripts/check_cloud.py --url http://127.0.0.1:8000 --cleanup
+```
+It uploads a small `check-…` mission with the Jetson's uploader code, reads it back through the
+API and counts the rows in Tiger Data (key and `DATABASE_URL` come from `.env`). Expect
+`ALL CHECKS PASSED`, including "drone_telemetry is a TimescaleDB hypertable".
 
+### 5. Public address (window 3, keep open)
+```powershell
+winget install --id Cloudflare.cloudflared
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+(Open a new window after installing.) It prints `https://<random>.trycloudflare.com`. Check it:
+```powershell
+python scripts/check_cloud.py --url https://<random>.trycloudflare.com --cleanup
+```
+The address changes every time `cloudflared` restarts; update the Jetson when it does. Quick
+tunnels are meant for testing; for a fixed address, use a named tunnel (free Cloudflare account
+plus a domain on Cloudflare) or a cloud host (Option B/C). Anyone with the address can *view*
+the dashboard and missions (uploads need the key): fine for a demo, not for real data.
+
+### 6. Jetson
 ```bash
-sudo apt update && sudo apt install -y python3-pip python3-venv git
-git clone <your repo> rescue-sight && cd rescue-sight
+cd ~/HackUmass-2026 && git pull && source ~/rescue-venv/bin/activate
+export INGEST_API_KEY='<same key as the laptop .env>'
+python scripts/check_cloud.py --url https://<random>.trycloudflare.com --cleanup
+```
+Without `DATABASE_URL` the Jetson checks only through the API, which is the point: it has no
+database credentials. Then set `uploader.server_url: https://<random>.trycloudflare.com` in your
+config (e.g. `config/<clip>.sim.yaml` or `config/edge.footage.yaml`) and run the pipeline with
+the same `INGEST_API_KEY` exported. Snapshots appear in Tiger Data within seconds of each
+snapshot (about every 10 s of flight). Turning the Jetson's hotspot off and on shows the
+offline capture and catch-up; the edge dashboard's "cut uplink" control simulates it without
+touching Wi-Fi.
+
+## Option B: container (any host)
+
+`Dockerfile` builds the dashboard and the API into one image (~360 MB):
+```bash
+docker build -t rescuesight-api .
+docker run --rm -p 8000:8000 --env-file .env rescuesight-api
+```
+Hosts that assign a port set `$PORT`. Because the API is stateless, free container hosts that
+sleep or wipe their disk (Render, Hugging Face Spaces, Google Cloud Run, …) work; the uploader
+simply retries while a sleeping host wakes up. Set `INGEST_API_KEY` and `DATABASE_URL` as the
+host's secrets, then point the Jetson's `server_url` at the host's HTTPS address.
+
+## Option C: Vultr (or any Ubuntu VM)
+
+A small CPU instance is enough (inference runs on the Jetson). Either run the container
+(Option B; install Docker first) or, without Docker:
+```bash
+sudo apt update && sudo apt install -y python3-venv git
+git clone https://github.com/Abishhhekkk/HackUmass-2026.git && cd HackUmass-2026 && git checkout claude
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r server/requirements.txt -r server/requirements-postgres.txt
-pip install -r server/requirements-ai.txt  # optional Gemini integration
-cd web && npm ci && npm run build && cd ..
-cp .env.example .env && nano .env
-set -a && . ./.env && set +a
-cd server && uvicorn rescue_api.app:app --host 0.0.0.0 --port 8000
+cp .env.example .env && nano .env        # INGEST_API_KEY + DATABASE_URL
+cd server && uvicorn rescue_api.app:app --host 127.0.0.1 --port 8000
 ```
-
-Set `INGEST_API_KEY`, `DATABASE_URL`, and (if enabled) `GEMINI_API_KEY` in the environment.
-Run under `tmux` or a systemd unit. Put Caddy in front for HTTPS, or secure the service with
-appropriate firewall rules. Set the same ingest key on the Jetson and point its uploader at
-the instance.
+Expose it with HTTPS: `cloudflared tunnel --url http://127.0.0.1:8000` works here too, or a
+reverse proxy such as Caddy. Run it under `tmux` or a systemd service so it survives logout.
 
 ## Gemini report
 

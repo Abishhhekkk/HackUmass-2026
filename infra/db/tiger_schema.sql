@@ -79,6 +79,26 @@ CREATE TABLE IF NOT EXISTS drone_telemetry (
   PRIMARY KEY (mission_id, drone_id, observed_at)   -- includes the time column, as hypertables require
 );
 
+-- Snapshot files (csv/geojson/report/telemetry/manifest), stored here so the API keeps nothing on
+-- its own disk. Contents are kept for the newest few versions per mission (see storage.py).
+CREATE TABLE IF NOT EXISTS snapshot_files (
+  mission_id TEXT NOT NULL,
+  version    INTEGER NOT NULL,
+  name       TEXT NOT NULL,
+  sha256     TEXT NOT NULL,
+  content    BYTEA NOT NULL,
+  PRIMARY KEY (mission_id, version, name)
+);
+
+-- Mission reports (Gemini or deterministic fallback), one per snapshot version reported on.
+CREATE TABLE IF NOT EXISTS ai_reports (
+  mission_id   TEXT NOT NULL,
+  version      INTEGER NOT NULL,
+  generated_at TEXT NOT NULL,
+  payload      TEXT NOT NULL,           -- the full report JSON
+  PRIMARY KEY (mission_id, version)
+);
+
 -- On Tiger Data / TimescaleDB, make it a hypertable (time-partitioned). Plain Postgres skips this.
 DO $$
 BEGIN

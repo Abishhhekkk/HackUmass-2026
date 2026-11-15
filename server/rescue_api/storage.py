@@ -1,7 +1,14 @@
-"""Snapshot index + people table. SQLite by default; Postgres/TigerData when DATABASE_URL is set.
+"""All cloud data in one database: SQLite by default, Postgres/Tiger Data when DATABASE_URL is set.
 
-Files (csv/geojson/report) live on disk under SNAPSHOT_DIR in the same layout the edge
-uses. On Vultr, mount block storage there, or swap in Vultr Object Storage (S3 API).
+The API is stateless: snapshot files (csv/geojson/report/telemetry/manifest) are stored in the
+``snapshot_files`` table in the same transaction as the indexed rows, and AI reports in
+``ai_reports``. Nothing is written to the server's disk, so the API can run anywhere (a
+laptop behind a tunnel, a container host that wipes its disk on restart) without losing data.
+File contents are kept for the newest ``KEEP_FILE_VERSIONS`` versions of each mission (every
+version's manifest row stays in ``snapshots``; the Jetson keeps the full history).
+
+Postgres connections come from a pool that checks each connection before handing it out, so
+a connection the database closed while idle (cloud databases do this) is replaced, not used.
 """
 from __future__ import annotations
 
@@ -74,21 +81,36 @@ CREATE TABLE IF NOT EXISTS drone_telemetry (
   reason      TEXT,
   PRIMARY KEY (mission_id, drone_id, observed_at)
 );
+CREATE TABLE IF NOT EXISTS snapshot_files (
+  mission_id TEXT NOT NULL,
+  version    INTEGER NOT NULL,
+  name       TEXT NOT NULL,
+  sha256     TEXT NOT NULL,
+  content    BLOB NOT NULL,
+  PRIMARY KEY (mission_id, version, name)
+);
+CREATE TABLE IF NOT EXISTS ai_reports (
+  mission_id   TEXT NOT NULL,
+  version      INTEGER NOT NULL,
+  generated_at TEXT NOT NULL,
+  payload      TEXT NOT NULL,
+  PRIMARY KEY (mission_id, version)
+);
 """
+
+KEEP_FILE_VERSIONS = 3
 
 PG_SCHEMA_FILE = Path(__file__).resolve().parents[2] / "infra" / "db" / "tiger_schema.sql"
 
 
 class Storage:
-    def __init__(self, database_url: str | None, snapshot_dir: str | Path):
-        self.snapshot_dir = Path(snapshot_dir)
-        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, database_url: str | None):
         self.pg = bool(database_url and database_url.startswith(("postgres://", "postgresql://")))
         self.ph = "%s" if self.pg else "?"
         self._lock = threading.Lock()
         if self.pg:
             try:
-                import psycopg
+                from psycopg_pool import ConnectionPool  # needs psycopg itself too
             except ImportError as exc:
                 raise RuntimeError(
                     "DATABASE_URL points at Postgres/Tiger Data but the driver is not installed. "
@@ -96,10 +118,12 @@ class Storage:
                     "(or unset DATABASE_URL to use SQLite)."
                 ) from exc
 
-            self._conn = psycopg.connect(database_url, autocommit=False)
-            with self._conn.cursor() as cur:
-                cur.execute(PG_SCHEMA_FILE.read_text())
-            self._conn.commit()
+            self._pool = ConnectionPool(
+                database_url, min_size=1, max_size=4, timeout=30, open=True,
+                check=ConnectionPool.check_connection,  # replace connections closed while idle
+                kwargs={"autocommit": False}, name="rescue-db")
+            with self._pool.connection() as conn:
+                conn.execute(PG_SCHEMA_FILE.read_text())
         else:
             path = (database_url or "sqlite:///data/cloud/rescue.db").removeprefix("sqlite:///")
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -109,6 +133,12 @@ class Storage:
 
     @contextmanager
     def tx(self):
+        """One transaction: commit if the block succeeds, roll back if it raises."""
+        if self.pg:
+            with self._pool.connection() as conn:  # commits / rolls back on exit
+                with conn.cursor() as cur:
+                    yield cur
+            return
         with self._lock:
             cur = self._conn.cursor()
             try:
@@ -228,7 +258,53 @@ class Storage:
                 f"VALUES (?,?,{ts},?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING"), rows)
         return len(rows)
 
+    def insert_files(self, cur, mission_id: str, version: int, files: dict[str, bytes]) -> None:
+        """Store a snapshot's files (already checksum-verified) and drop file contents of
+        versions older than the newest KEEP_FILE_VERSIONS for this mission."""
+        import hashlib
+
+        cur.executemany(self._q(
+            "INSERT INTO snapshot_files (mission_id, version, name, sha256, content) VALUES (?,?,?,?,?)"),
+            [(mission_id, version, name, hashlib.sha256(data).hexdigest(), data)
+             for name, data in sorted(files.items())])
+        cur.execute(self._q("DELETE FROM snapshot_files WHERE mission_id=? AND version<=?"),
+                    (mission_id, version - KEEP_FILE_VERSIONS))
+
+    def save_ai_report(self, mission_id: str, version: int, payload: dict) -> None:
+        with self.tx() as cur:
+            cur.execute(self._q(
+                "INSERT INTO ai_reports (mission_id, version, generated_at, payload) VALUES (?,?,?,?) "
+                "ON CONFLICT (mission_id, version) DO UPDATE SET "
+                "generated_at = EXCLUDED.generated_at, payload = EXCLUDED.payload"),
+                (mission_id, version, payload.get("generated_at") or "", json.dumps(payload)))
+
     # ------------------------------------------------------------------ reads
+    def read_file(self, mission_id: str, version: int, name: str) -> bytes | None:
+        with self.tx() as cur:
+            cur.execute(self._q("SELECT content FROM snapshot_files WHERE mission_id=? AND version=? AND name=?"),
+                        (mission_id, version, name))
+            row = cur.fetchone()
+        return bytes(row[0]) if row else None
+
+    def latest_ai_report(self, mission_id: str) -> dict | None:
+        with self.tx() as cur:
+            cur.execute(self._q("SELECT payload FROM ai_reports WHERE mission_id=? "
+                                "ORDER BY version DESC LIMIT 1"), (mission_id,))
+            row = cur.fetchone()
+        return json.loads(row[0]) if row else None
+
+    def fetchall(self, sql: str, params: tuple = ()) -> list[tuple]:
+        """Read-only query helper (tests, scripts/check_cloud.py). Use ? placeholders."""
+        with self.tx() as cur:
+            cur.execute(self._q(sql), params)
+            return [tuple(r) for r in cur.fetchall()]
+
+    def close(self) -> None:
+        if self.pg:
+            self._pool.close()
+        else:
+            self._conn.close()
+
     def flight_path(self, mission_id: str, limit: int = 20000) -> list[dict]:
         """Drone track in time order (newest `limit` rows), from the time-series table."""
         with self.tx() as cur:

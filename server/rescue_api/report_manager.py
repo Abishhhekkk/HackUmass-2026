@@ -8,17 +8,15 @@ every ~10 s, and one LLM call per snapshot would be slow, costly and mostly redu
 * On demand: ``generate()`` (the dashboard button) runs immediately, rate-limited per
   mission by ``REPORT_MIN_GAP_S`` (default 20 s).
 
-Each report is stored next to the snapshot it describes (``vNNNNNN/ai-report.json`` and
-``ai-report.md``), so it always cites the exact data it was written from.
+Each report is stored in the ``ai_reports`` table under the snapshot version it describes,
+so it always cites the exact data it was written from.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import threading
 import time
-from pathlib import Path
 from typing import Callable
 
 log = logging.getLogger(__name__)
@@ -34,25 +32,17 @@ class ReportRateLimited(Exception):
         self.reason = reason
 
 
-def _write_atomic(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)  # readers never see a half-written report
-
-
 def generate_and_store(store, mission_id: str, version: int) -> dict:
     """Write the report for one snapshot version and return it (never raises)."""
     row = store.snapshot_row(mission_id, version)
-    directory = store.snapshot_dir / mission_id / f"v{version:06d}"
     if not row:
         raise LookupError(f"no snapshot {mission_id} v{version}")
     try:
         from .agent import generate_report
 
-        deterministic = (directory / "report.md").read_text(encoding="utf-8")
+        deterministic = (store.read_file(mission_id, version, "report.md") or b"").decode("utf-8")
         result = generate_report(store, mission_id, row, deterministic)
         result = {**result, "status": "ready", "generated_at": _now_iso()}
-        _write_atomic(directory / "ai-report.md", result["report"])
     except Exception:
         log.exception("report generation failed for %s v%d", mission_id, version)
         result = {
@@ -61,8 +51,7 @@ def generate_and_store(store, mission_id: str, version: int) -> dict:
             "error": "Report generation failed; check cloud service logs.",
             "human_review_required": True,
         }
-    _write_atomic(directory / "ai-report.json",
-                  json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    store.save_ai_report(mission_id, version, result)
     log.info("report for %s v%d: %s", mission_id, version, result.get("generated_by") or "failed")
     return result
 
@@ -100,15 +89,7 @@ class ReportManager:
     # ------------------------------------------------------------------ reads
     def latest_report(self, mission_id: str) -> dict | None:
         """Newest stored report for the mission, whichever snapshot version it describes."""
-        mission_dir = self.store.snapshot_dir / mission_id
-        versions = sorted((p for p in mission_dir.glob("v[0-9]*") if (p / "ai-report.json").is_file()),
-                          key=lambda p: p.name, reverse=True)
-        for directory in versions:
-            try:
-                return json.loads((directory / "ai-report.json").read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-        return None
+        return self.store.latest_ai_report(mission_id)
 
     def status(self, mission_id: str) -> dict:
         with self._lock:

@@ -1,9 +1,11 @@
-"""Cloud API (host on Vultr). Receives snapshots from the Jetson and serves the dashboard.
+"""Cloud API: receives snapshots from the Jetson, stores everything in the database (Tiger
+Data via DATABASE_URL), serves the dashboard. Stateless, so it runs on a laptop behind a
+tunnel, on Vultr, or in any container host. See docs/deploy.md.
 
     uvicorn rescue_api.app:app --host 0.0.0.0 --port 8000      (from server/)
 
-Env: INGEST_API_KEY, DATABASE_URL (sqlite:///... or postgresql://...), SNAPSHOT_DIR,
-     GEMINI_API_KEY, GEMINI_MODEL, WEB_DIR, MAX_UPLOAD_BYTES,
+Env (or the repo-root .env file): INGEST_API_KEY, DATABASE_URL (sqlite:///... or
+     postgresql://...), GEMINI_API_KEY, GEMINI_MODEL, WEB_DIR, MAX_UPLOAD_BYTES,
      REPORT_INTERVAL_S (default 300, 0 = on demand only), REPORT_MIN_GAP_S (default 20)
 """
 from __future__ import annotations
@@ -15,14 +17,13 @@ import json
 import logging
 import os
 import re
-import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -46,11 +47,13 @@ ALLOWED_FILES = {"sightings.csv", "heatmap.geojson", "report.md", "telemetry.jso
                  "flight_path.csv"}  # flight_path.csv is optional (older edges don't send it)
 REQUIRED_FILES = {"sightings.csv", "heatmap.geojson", "report.md"}  # ingest and reads depend on them
 ID_RE = r"^[A-Za-z0-9._-]{1,80}$"
-RESERVED_IDS = {".", ".."}  # match ID_RE but are directory references, not names
+RESERVED_IDS = {".", ".."}
+MEDIA_TYPES = {".csv": "text/csv", ".geojson": "application/geo+json", ".json": "application/json",
+               ".md": "text/markdown; charset=utf-8"}  # match ID_RE but are directory references, not names
 
 
 def valid_id(value: str) -> bool:
-    """IDs become directory names under SNAPSHOT_DIR, so "." and ".." are refused."""
+    """IDs also become file/directory names on the Jetson, so "." and ".." are refused."""
     return bool(re.match(ID_RE, value)) and value not in RESERVED_IDS
 
 
@@ -124,8 +127,7 @@ def now_iso() -> str:
 
 
 def create_app(storage: Storage | None = None) -> FastAPI:
-    store = storage or Storage(os.environ.get("DATABASE_URL", f"sqlite:///{REPO / 'data/cloud/rescue.db'}"),
-                               os.environ.get("SNAPSHOT_DIR", str(REPO / "data/cloud/snapshots")))
+    store = storage or Storage(os.environ.get("DATABASE_URL") or f"sqlite:///{REPO / 'data/cloud/rescue.db'}")
     # Reports are periodic or on demand, never per upload (see report_manager.py).
     reports = ReportManager(store)
 
@@ -141,6 +143,9 @@ def create_app(storage: Storage | None = None) -> FastAPI:
     app.state.store = store
     app.state.reports = reports
     api_key = os.environ.get("INGEST_API_KEY")
+    if not api_key:
+        log.warning("INGEST_API_KEY is not set: ANYONE who can reach this API can upload snapshots. "
+                    "Set it before exposing the API (e.g. through a tunnel).")
     max_bytes = int(os.environ.get("MAX_UPLOAD_BYTES", 10 * 1024 * 1024))
 
     def require_key(x_api_key: Annotated[str | None, Header()] = None):
@@ -192,20 +197,13 @@ def create_app(storage: Storage | None = None) -> FastAPI:
                 if current_hash == m.content_hash:
                     return {"status": "duplicate", "latest_version": current}
                 raise HTTPException(409, "same version with different content")
-            d = store.snapshot_dir / m.mission_id / f"v{m.version:06d}"
-            tmp = d.with_name(d.name + ".tmp")
-            shutil.rmtree(tmp, ignore_errors=True)
-            tmp.mkdir(parents=True)
-            for name, data in got.items():
-                (tmp / name).write_bytes(data)
-            (tmp / "manifest.json").write_bytes(raw)
-            shutil.rmtree(d, ignore_errors=True)
-            tmp.rename(d)
+            # rows + file contents in one transaction: an upload is stored completely or not at all
             received = now_iso()
             store.insert_snapshot(
                 cur, manifest_dict, received, got["sightings.csv"], got["heatmap.geojson"]
             )
             store.insert_flight_path(cur, manifest_dict, got.get("flight_path.csv"))
+            store.insert_files(cur, m.mission_id, m.version, {**got, "manifest.json": raw})
         return JSONResponse({"status": "accepted", "latest_version": m.version, "received_at": received},
                             status_code=201)
 
@@ -217,8 +215,11 @@ def create_app(storage: Storage | None = None) -> FastAPI:
             raise HTTPException(404, "no snapshot for mission")
         return row
 
-    def _path(mission_id: str, version: int, name: str) -> Path:
-        return store.snapshot_dir / mission_id / f"v{version:06d}" / name
+    def _file(mission_id: str, version: int, name: str) -> bytes:
+        data = store.read_file(mission_id, version, name)
+        if data is None:
+            raise HTTPException(404, f"{name} is not stored for snapshot v{version}")
+        return data
 
     @app.get("/api/v1/missions")
     def missions():
@@ -227,7 +228,7 @@ def create_app(storage: Storage | None = None) -> FastAPI:
     @app.get("/api/v1/missions/{mission_id}/latest")
     def latest(mission_id: str):
         row = _row(mission_id)
-        heat = json.loads(_path(mission_id, row["version"], "heatmap.geojson").read_text())
+        heat = json.loads(_file(mission_id, row["version"], "heatmap.geojson"))
         return {"manifest": row["manifest"], "heatmap": heat, "received_at": row["received_at"],
                 "source": "cloud"}
 
@@ -236,15 +237,20 @@ def create_app(storage: Storage | None = None) -> FastAPI:
         if name not in ALLOWED_FILES | {"manifest.json"}:
             raise HTTPException(404)
         row = _row(mission_id, version)
-        file_path = _path(mission_id, row["version"], name)
-        if not file_path.is_file():
-            raise HTTPException(404, f"{name} is not present in this snapshot")
-        return FileResponse(file_path, filename=f"{mission_id}-{name}")
+        if name == "ai-report.md":  # reports live in their own table
+            stored = reports.latest_report(mission_id)
+            if not stored or not stored.get("report"):
+                raise HTTPException(404, "no report yet")
+            data = stored["report"].encode()
+        else:
+            data = _file(mission_id, row["version"], name)
+        return Response(data, media_type=MEDIA_TYPES.get(Path(name).suffix, "application/octet-stream"),
+                        headers={"Content-Disposition": f'attachment; filename="{mission_id}-{name}"'})
 
     @app.get("/api/v1/missions/{mission_id}/report", response_class=PlainTextResponse)
     def report(mission_id: str):
         row = _row(mission_id)
-        return _path(mission_id, row["version"], "report.md").read_text()
+        return _file(mission_id, row["version"], "report.md").decode()
 
     @app.get("/api/v1/missions/{mission_id}/ai-report")
     def automated_report(mission_id: str):
@@ -320,7 +326,7 @@ def create_app(storage: Storage | None = None) -> FastAPI:
         from .agent import answer_question
 
         row = _row(mission_id)
-        deterministic = _path(mission_id, row["version"], "report.md").read_text()
+        deterministic = _file(mission_id, row["version"], "report.md").decode()
         return answer_question(store, mission_id, row, deterministic, request.question)
 
     # WEB_DIR is the web/ project folder; its dist/ build is what gets served.
@@ -339,4 +345,15 @@ def create_app(storage: Storage | None = None) -> FastAPI:
     return app
 
 
-app = create_app() if os.environ.get("RESCUE_API_NO_AUTOCREATE") != "1" else None
+def _load_dotenv() -> None:
+    """When started with uvicorn, read the repo-root .env (variables already set win)."""
+    from dotenv import load_dotenv
+
+    load_dotenv(REPO / ".env", override=False)
+
+
+if os.environ.get("RESCUE_API_NO_AUTOCREATE") != "1":
+    _load_dotenv()
+    app = create_app()
+else:
+    app = None

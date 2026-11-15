@@ -68,7 +68,7 @@ flight_path_interval_s: 1.0
 
 uploader:
   enabled: true
-  server_url: https://YOUR-VULTR-HOST
+  server_url: https://YOUR-API-HOST   # e.g. https://<random>.trycloudflare.com (docs/deploy.md)
   api_key_env: INGEST_API_KEY
   offline_flag_file: data/edge/OFFLINE
 
