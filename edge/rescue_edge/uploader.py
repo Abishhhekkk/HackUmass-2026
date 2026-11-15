@@ -115,7 +115,9 @@ class Uploader(threading.Thread):
             if self.corrupt_next:
                 data, self.corrupt_next = data[: len(data) // 2], False
             files.append(("files", (f["name"], data, "application/octet-stream")))
-        headers = {"X-API-Key": self.api_key} if self.api_key else {}
+        headers = {"ngrok-skip-browser-warning": "1"}   # harmless elsewhere
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
         r = requests.post(self.url, files=files, headers=headers, timeout=(5, 30))
         if r.status_code >= 400:
             raise UploadRejected(r.status_code, r.text)

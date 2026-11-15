@@ -14,8 +14,10 @@ export const POLL_MS = 3000;
 export const NO_SERVICE =
   "No mission service at this address. This copy of Vantage is the website only; live missions are on the Jetson and the cloud API.";
 
-async function request(base, path, options) {
-  const response = await fetch(`${base}${path}`, options);
+async function request(base, path, options = {}) {
+  // ngrok's free plan shows browsers a notice page instead of the API unless this header is sent.
+  const headers = { "ngrok-skip-browser-warning": "1", ...(options.headers || {}) };
+  const response = await fetch(`${base}${path}`, { ...options, headers });
   const type = response.headers.get("content-type") || "";
   // A static host (Netlify, Vercel) answers API paths with its own HTML page, not our JSON.
   if (type.includes("text/html")) {
