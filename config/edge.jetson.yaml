@@ -1,0 +1,73 @@
+# Real hardware: Jetson Orin Nano + camera + ESP32 telemetry over USB serial.
+mission_id: null          # null => auto-generate per run
+drone_id: drone-01
+storage_root: data/edge/snapshots
+
+source:
+  kind: camera
+  device: csi             # "csi" for an IMX219-style CSI camera, or 0 for USB webcam
+  width: 1920
+  height: 1080
+  fps: 30
+  # For a prerecorded clip instead:
+  # kind: video
+  # path: data/flights/clip01.mp4
+  # video_start_time: "2026-11-14T15:00:00Z"   # GPS time of the first frame (align with telemetry log)
+
+telemetry:
+  kind: serial
+  port: /dev/ttyUSB0      # ESP32; check with `ls /dev/ttyUSB* /dev/ttyACM*`
+  baud: 115200
+  log_path: data/edge/telemetry_log.csv   # keep this: it lets you replay the flight later
+  max_gap_s: 1.0
+  max_age_s: 2.0
+
+camera:
+  width: 1920
+  height: 1080
+  hfov_deg: 62.2          # IMX219 nominal; replace with calibrated fx/fy/cx/cy
+
+detector:
+  kind: yolo
+  model_path: models/yolov8n.engine   # build on the Jetson: see docs/hardware.md
+  imgsz: 640              # must equal the engine's export size
+  # 0.10 = ByteTrack's low threshold: new tracks still need a >= 0.25 detection, but a tracked
+  # person is not lost when their score dips. 0.35 discarded most aerial people
+  # (docs/detector-eval.md: 5% recall at 640/0.35).
+  conf_threshold: 0.10
+  device: 0
+  tracker: botsort.yaml   # ByteTrack + camera-motion compensation: keeps small people tracked while the drone moves (docs/detector-eval.md)
+  # Tiled detection for small, distant people: overlapping 320 px crops, each run through the
+  # same 640 engine (2x enlargement), plus one full-frame pass for near/large people.
+  # VisDrone recall (stock weights): tile 320 47%, tile 640 35%, untiled 640 5%. Measured on the Orin Nano Super (JetPack 7.2.1, MAXN, yolov8n FP16 engine, 1920x1080):
+  # whole frame 18 ms (55 fps), tile 640 114 ms (8.8 fps), tile 480 227 ms (4.4 fps),
+  # tile 320 454 ms (2.2 fps). scripts/bench_detector.py re-measures.
+  # 640 keeps up with the scheduler; remove `tile` for whole-frame detection.
+  tile: 640
+  tile_overlap: 0.2
+  tile_full_frame: true
+
+aggregate:
+  min_frames: 3
+  merge_radius_m: 4.0
+  cell_size_m: 10.0
+  recency_tau_s: 1800
+
+scheduler:
+  search_stride: 4
+  active_stride: 3        # every 3rd frame while people are in view (tiles run ~8.8 fps)
+  thermal_stride: 6
+  hold_active_s: 3.0
+  thermal_limit_c: 80
+
+snapshot_interval_s: 10
+
+uploader:
+  enabled: true
+  server_url: https://YOUR-API-HOST   # e.g. https://<random>.trycloudflare.com (docs/deploy.md)
+  api_key_env: INGEST_API_KEY
+  offline_flag_file: data/edge/OFFLINE
+
+local_server:
+  host: 0.0.0.0
+  port: 8080

@@ -1,0 +1,53 @@
+# Mock mode: no camera, no GPU, no drone. Replays data/demo (make it with scripts/make_demo_data.py).
+# Relative paths are relative to the repo root.
+mission_id: demo-mission
+drone_id: drone-01
+storage_root: data/edge/snapshots
+
+source:
+  kind: replay            # replay | video | camera
+  path: data/demo/detections.jsonl
+  realtime: true          # pace frames like a real flight
+  speed: 4.0              # 4x faster than real time
+
+telemetry:
+  kind: replay            # replay | serial
+  path: data/demo/telemetry.csv
+  max_gap_s: 1.0
+  max_age_s: 2.0
+
+camera:                   # replace with your calibration (fx, fy, cx, cy) when you have it
+  width: 1920
+  height: 1080
+  hfov_deg: 70.0
+
+detector:
+  kind: mock              # mock | yolo
+  conf_threshold: 0.35
+
+aggregate:
+  min_frames: 3           # tracks shorter than this are treated as noise
+  merge_radius_m: 4.0     # merge re-sightings from later passes within this distance
+  cell_size_m: 10.0
+  recency_tau_s: 1800
+
+scheduler:
+  search_stride: 3
+  active_stride: 1
+  thermal_stride: 6
+  hold_active_s: 3.0
+  thermal_limit_c: 80
+
+snapshot_interval_s: 10   # in flight-time seconds; only written if data changed
+
+uploader:
+  enabled: true
+  server_url: http://127.0.0.1:8000
+  api_key_env: INGEST_API_KEY
+  offline_flag_file: data/edge/OFFLINE   # file exists => behave as if the link is down (demo)
+  base_backoff_s: 1.0
+  max_backoff_s: 20.0
+
+local_server:
+  host: 0.0.0.0
+  port: 8080

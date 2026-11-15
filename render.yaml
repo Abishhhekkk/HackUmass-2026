@@ -1,0 +1,20 @@
+# Render Blueprint: the Vantage cloud API + dashboard (Dockerfile), storing in Tiger Data.
+# Render dashboard: New > Blueprint > this repository. Secrets are entered in the dashboard
+# (sync: false), never stored here.
+services:
+  - type: web
+    name: vantage
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free            # free sleeps after ~15 min idle; "starter" stays on
+    healthCheckPath: /api/v1/health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL       # Tiger Data postgres:// address
+        sync: false
+      - key: INGEST_API_KEY     # same value as on the Jetson
+        sync: false
+      - key: GEMINI_API_KEY     # optional: AI reports and Ask
+        sync: false
+      - key: REPORT_INTERVAL_S
+        value: "300"

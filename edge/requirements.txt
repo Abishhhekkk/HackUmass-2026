@@ -1,0 +1,14 @@
+# Edge (Jetson or laptop mock mode). On the Jetson, install torch/torchvision + ultralytics
+# per docs/hardware.md FIRST, then this file.
+numpy>=1.24
+opencv-python>=4.8      # on Jetson prefer the system OpenCV with GStreamer (skip this line)
+pyyaml>=6.0
+requests>=2.31
+fastapi>=0.110
+uvicorn>=0.27
+# live hardware only:
+pyserial>=3.5
+# ultralytics>=8.3
+# ByteTrack in Ultralytics needs `lap`, which Ultralytics only installs at runtime when first
+# tracking. An offline Jetson cannot do that and crashes on the first frame, so install it now:
+# lap>=0.5.12
