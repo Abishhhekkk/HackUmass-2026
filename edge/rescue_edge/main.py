@@ -26,8 +26,9 @@ from .scheduler import AdaptiveScheduler, SchedulerConfig
 from .snapshot import SnapshotWriter
 from .telemetry import SerialTelemetryReader, TelemetryBuffer, load_csv
 from .uploader import Uploader
+from .wire import load_key
 
-log = logging.getLogger("rescue_edge")
+log =logging.getLogger("rescue_edge")
 
 
 def _parse_time(v) -> float:
@@ -73,7 +74,9 @@ class Pipeline:
                 self.root, self.mission_id, ucfg["server_url"],
                 api_key=os.environ.get(ucfg.get("api_key_env", "INGEST_API_KEY")),
                 offline_flag_file=str(self._path(ucfg["offline_flag_file"])) if ucfg.get("offline_flag_file") else None,
-                base_backoff_s=ucfg.get("base_backoff_s", 2.0), max_backoff_s=ucfg.get("max_backoff_s", 60.0))
+                base_backoff_s=ucfg.get("base_backoff_s", 2.0), max_backoff_s=ucfg.get("max_backoff_s", 60.0),
+                # unset => plaintext upload; a malformed key raises here so we never fall back silently
+                payload_key=load_key(os.environ.get(ucfg.get("payload_key_env", "RESCUE_PAYLOAD_KEY"))))
         self.running = False
         self.finished = False
         self.last_frame_t: float | None = None

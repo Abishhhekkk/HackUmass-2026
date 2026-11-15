@@ -4,6 +4,8 @@ numpy>=1.24
 opencv-python>=4.8      # on Jetson prefer the system OpenCV with GStreamer (skip this line)
 pyyaml>=6.0
 requests>=2.31
+cryptography>=42        # AES-256-GCM for encrypted uploads (rescue_edge/wire.py)
+zstandard>=0.22         # preferred compressor; without it uploads fall back to zlib
 fastapi>=0.110
 uvicorn>=0.27
 # live hardware only:

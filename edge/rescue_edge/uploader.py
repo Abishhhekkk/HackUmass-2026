@@ -5,6 +5,9 @@
 * The server verifies every file's sha256 and keeps the highest version, so a cut-off
   or repeated upload is harmless; we simply try again.
 * Bounded exponential backoff with jitter.
+* With a payload key, every part is compressed then AES-256-GCM encrypted (see wire.py).
+  The manifest's sha256 values still describe the PLAINTEXT files; the server opens each
+  part first, then verifies them exactly as before.
 """
 from __future__ import annotations
 
@@ -17,13 +20,16 @@ from pathlib import Path
 import requests
 
 from .snapshot import latest_version, snapshot_dir
+from .wire import seal
 
 
 class Uploader(threading.Thread):
     def __init__(self, root: str | Path, mission_id: str, server_url: str, api_key: str | None = None,
                  offline_flag_file: str | None = None, base_backoff_s: float = 2.0,
-                 max_backoff_s: float = 60.0, poll_s: float = 2.0):
+                 max_backoff_s: float = 60.0, poll_s: float = 2.0,
+                 payload_key: bytes | None = None):
         super().__init__(daemon=True)
+        self.payload_key = payload_key  # 32 bytes => compress + encrypt every upload
         self.mission_dir = Path(root) / mission_id
         self.root, self.mission_id = Path(root), mission_id
         self.url = server_url.rstrip("/") + "/api/v1/snapshots"
@@ -57,7 +63,8 @@ class Uploader(threading.Thread):
         local = latest_version(self.mission_dir)
         return {"local_version": local, "acked_version": self.state["acked_version"],
                 "pending": local > self.state["acked_version"], "online": self.online,
-                "last_error": self.last_error, "acked_at": self.state["acked_at"]}
+                "last_error": self.last_error, "acked_at": self.state["acked_at"],
+                "encrypted": self.payload_key is not None}
 
     def stop(self) -> None:
         self._stop.set()
@@ -68,13 +75,19 @@ class Uploader(threading.Thread):
         self._wake.set()
 
     # ------------------------------------------------------------------ upload
+    def _part(self, name: str, data: bytes) -> bytes:
+        """Compress + encrypt one upload part (fresh nonce on every attempt), or pass through."""
+        return seal(data, self.payload_key, name) if self.payload_key else data
+
     def upload_once(self, version: int) -> dict:
         d = snapshot_dir(self.root, self.mission_id, version)
         manifest = json.loads((d / "manifest.json").read_text())
-        files = [("manifest", ("manifest.json", (d / "manifest.json").read_bytes(), "application/json"))]
+        files = [("manifest", ("manifest.json",
+                               self._part("manifest.json", (d / "manifest.json").read_bytes()),
+                               "application/json"))]
         for f in manifest["files"]:
-            data = (d / f["name"]).read_bytes()
-            if self.corrupt_next:
+            data = self._part(f["name"], (d / f["name"]).read_bytes())
+            if self.corrupt_next:  # truncating AFTER sealing mimics a transfer cut mid-flight
                 data, self.corrupt_next = data[: len(data) // 2], False
             files.append(("files", (f["name"], data, "application/octet-stream")))
         headers = {"X-API-Key": self.api_key} if self.api_key else {}

@@ -4,6 +4,8 @@ python-multipart>=0.0.9
 pydantic>=2.6
 requests>=2.31
 python-dotenv>=1.0
+cryptography>=42        # opens encrypted uploads (rescue_api/wire.py)
+zstandard>=0.22         # needed to open zstd-compressed uploads from the Jetson
 # TigerData / Postgres:
 # psycopg[binary]>=3.1
 # tests:

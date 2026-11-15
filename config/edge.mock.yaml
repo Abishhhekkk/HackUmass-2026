@@ -44,6 +44,7 @@ uploader:
   enabled: true
   server_url: http://127.0.0.1:8000
   api_key_env: INGEST_API_KEY
+  payload_key_env: RESCUE_PAYLOAD_KEY    # base64 32-byte key => compress + encrypt uploads
   offline_flag_file: data/edge/OFFLINE   # file exists => behave as if the link is down (demo)
   base_backoff_s: 1.0
   max_backoff_s: 20.0
