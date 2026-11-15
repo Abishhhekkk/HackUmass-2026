@@ -180,8 +180,12 @@ svg {
   font-family: var(--text);
 }
 
-.leaflet-tile-pane {
+.tiles-streets {
   filter: invert(1) hue-rotate(180deg) saturate(0.35) brightness(0.78) contrast(0.92);
+}
+
+.tiles-satellite {
+  filter: saturate(0.75) brightness(0.8);
 }
 
 .leaflet-tooltip {

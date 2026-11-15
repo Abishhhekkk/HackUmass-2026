@@ -10,6 +10,8 @@ id starts with "sim-", and every snapshot's telemetry.json records the source as
 
 Flight path (pick to roughly match what the clip shows):
 * straight: from --lat/--lon, flying --heading degrees (0 = north, 90 = east) at --speed m/s
+* start to end: --lat/--lon to --to LAT LON; heading and speed are computed so the drone
+  reaches the end point when the video ends
 * hover:    fixed at --lat/--lon, facing --heading
 Height --alt m above flat ground; camera assumed straight down, image top = direction of flight.
 Choose top-down (nadir) clips: oblique footage breaks the geometry the positions rely on.
@@ -51,13 +53,20 @@ def video_info(path: Path) -> tuple[float, int, int, int]:
     return fps, frames, w, h
 
 
+def latlon_to_offset(lat0: float, lon0: float, lat: float, lon: float) -> tuple[float, float]:
+    """Metres north and east of (lat0, lon0); equirectangular, fine for flight-scale distances."""
+    north = (lat - lat0) * 110540.0
+    east = (lon - lon0) * 111320.0 * math.cos(math.radians((lat + lat0) / 2))
+    return north, east
+
+
 def flight_rows(start: float, duration: float, lat: float, lon: float, alt: float, heading: float,
                 speed: float, pattern: str, hz: float) -> list[list]:
     rows = []
     n = int(math.ceil((duration + 2.0) * hz)) + 1   # 1 s margin either side
     for i in range(n):
         dt = -1.0 + i / hz
-        dist = max(dt, 0.0) * speed if pattern == "straight" else 0.0
+        dist = min(max(dt, 0.0), duration) * speed if pattern == "straight" else 0.0  # stop at the end
         north = dist * math.cos(math.radians(heading))
         east = dist * math.sin(math.radians(heading))
         la, lo = offset_to_latlon(lat, lon, north, east)
@@ -75,6 +84,8 @@ def main() -> int:
     ap.add_argument("--alt", type=float, default=40.0, help="height above ground, m")
     ap.add_argument("--heading", type=float, default=90.0, help="deg clockwise from north")
     ap.add_argument("--speed", type=float, default=5.0, help="m/s (straight)")
+    ap.add_argument("--to", type=float, nargs=2, metavar=("LAT", "LON"),
+                    help="end point: fly straight from --lat/--lon to here over the video's length")
     ap.add_argument("--dfov", type=float, default=82.1, help="camera diagonal field of view, deg")
     ap.add_argument("--start", help="UTC time of the first frame, ISO-8601 (default: now)")
     ap.add_argument("--hz", type=float, default=10.0)
@@ -88,6 +99,14 @@ def main() -> int:
     video = args.video.resolve()
     fps, frames, w, h = video_info(video)
     duration = frames / fps
+    if args.to:
+        north, east = latlon_to_offset(args.lat, args.lon, *args.to)
+        dist = math.hypot(north, east)
+        args.pattern = "straight"
+        args.heading = math.degrees(math.atan2(east, north)) % 360
+        args.speed = dist / duration if duration > 0 else 0.0
+        print(f"start -> end: {dist:.0f} m at heading {args.heading:.1f} deg, "
+              f"{args.speed:.1f} m/s over {duration:.1f} s")
     start = (datetime.fromisoformat(args.start.replace("Z", "+00:00")).timestamp() if args.start
              else float(int(datetime.now(timezone.utc).timestamp())))
     stem = re.sub(r"[^A-Za-z0-9._-]", "-", video.stem)[:60]

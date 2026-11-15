@@ -79,7 +79,16 @@ def choose_config(args) -> Path:
             say("   Check camera.width/height/dfov_deg in config/edge.footage.yaml match this drone.")
             return out
         say(f"   {video.name}: no .SRT flight log next to it, so the flight path is SIMULATED")
-        run([sys.executable, "scripts/simulate_telemetry.py", video])
+        extra = []
+        if args.start_pos:
+            lat, lon = (float(v) for v in args.start_pos.split(","))
+            extra += ["--lat", lat, "--lon", lon]
+        if args.end_pos:
+            lat, lon = (float(v) for v in args.end_pos.split(","))
+            extra += ["--to", lat, lon]
+        if args.alt:
+            extra += ["--alt", args.alt]
+        run([sys.executable, "scripts/simulate_telemetry.py", video, *extra])
         return ROOT / "config" / f"{video.stem}.sim.yaml"
     sims = sorted((p for p in (ROOT / "config").glob("*.sim.yaml") if p != RUN_CONFIG),
                   key=lambda p: p.stat().st_mtime, reverse=True)
@@ -153,6 +162,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--video", help="mp4 to process (uses its .SRT if present, else simulates)")
     ap.add_argument("--config", help="use this config as is")
+    ap.add_argument("--start-pos", metavar="LAT,LON", help="simulated flight start (video without .SRT)")
+    ap.add_argument("--end-pos", metavar="LAT,LON", help="simulated flight end: straight line start -> end")
+    ap.add_argument("--alt", type=float, help="simulated height above ground, m (default 40)")
     ap.add_argument("--mission-id", help="default: mission-<date>-<time>")
     ap.add_argument("--update", action="store_true", help="git pull before starting")
     ap.add_argument("--install-shortcut", action="store_true")

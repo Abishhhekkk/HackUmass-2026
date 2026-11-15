@@ -3,6 +3,27 @@ import { Fragment, useCallback, useEffect, useMemo, useRef } from "react";
 import { Circle, MapContainer, Marker, Polygon, Polyline, TileLayer, Tooltip, useMap } from "react-leaflet";
 import L from "leaflet";
 
+// Where the map opens before any mission data arrives (the demo flight, Nepal).
+export const HOME_CENTER = [28.2087, 85.3552];
+
+export const BASEMAPS = {
+  off: null,
+  streets: {
+    label: "Streets",
+    url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: "© OpenStreetMap contributors",
+    className: "tiles-streets",
+    maxNativeZoom: 19,
+  },
+  satellite: {
+    label: "Satellite",
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
+    className: "tiles-satellite",
+    maxNativeZoom: 18,
+  },
+};
+
 export function Mark({ size = 22 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -90,7 +111,7 @@ export function MapView({
   showCells = true,
   showPeople = true,
   showPath = true,
-  showBasemap = false,
+  basemap = "off",
   cutoffMs = null,
   selectedId = null,
   onSelect,
@@ -112,8 +133,8 @@ export function MapView({
   return (
     <MapContainer
       className={`v-map ${className}`}
-      center={[42.3893, -72.528]}
-      zoom={17}
+      center={HOME_CENTER}
+      zoom={13}
       zoomControl={false}
       attributionControl={false}
       scrollWheelZoom={interactive}
@@ -122,7 +143,15 @@ export function MapView({
       keyboard={interactive}
       preferCanvas
     >
-      {showBasemap && <TileLayer url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" maxZoom={19} />}
+      {BASEMAPS[basemap] && (
+        <TileLayer
+          key={basemap}
+          url={BASEMAPS[basemap].url}
+          className={BASEMAPS[basemap].className}
+          maxNativeZoom={BASEMAPS[basemap].maxNativeZoom}
+          maxZoom={20}
+        />
+      )}
       <Fit points={points} />
       {interactive && <Zoom />}
       {showPath &&

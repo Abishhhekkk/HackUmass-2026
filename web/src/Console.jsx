@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { LINK_LABEL, UNLOCATED_REASONS, clock, coord, describeReport, num, useMission } from "./lib.jsx";
-import { HEAT, MapView, Wordmark } from "./ui.jsx";
+import { BASEMAPS, HEAT, MapView, Wordmark } from "./ui.jsx";
 
 const WINDOWS = [
   { value: 0, label: "All" },
@@ -263,7 +263,9 @@ export default function Console() {
   const [tab, setTab] = useState("inspect");
   const [selected, setSelected] = useState(null);
   const [windowSeconds, setWindowSeconds] = useState(0);
-  const [layers, setLayers] = useState({ cells: true, people: true, path: true, basemap: false });
+  const [layers, setLayers] = useState({ cells: true, people: true, path: true });
+  const [basemap, setBasemap] = useState("off");
+  const nextBasemap = () => setBasemap((b) => (b === "off" ? "satellite" : b === "satellite" ? "streets" : "off"));
   const [palette, setPalette] = useState(false);
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
@@ -459,8 +461,8 @@ export default function Console() {
             <button type="button" className={layers.path ? "on" : ""} aria-pressed={layers.path} onClick={() => toggle("path")} title="Drone path">
               <Route size={14} /> <span>Path</span>
             </button>
-            <button type="button" className={layers.basemap ? "on" : ""} aria-pressed={layers.basemap} onClick={() => toggle("basemap")} title="Online street map (needs internet)">
-              <MapIcon size={14} /> <span>Basemap</span>
+            <button type="button" className={basemap !== "off" ? "on" : ""} onClick={nextBasemap} title="Background map: off, satellite, streets (needs internet)">
+              <MapIcon size={14} /> <span>{basemap === "off" ? "Basemap" : BASEMAPS[basemap].label}</span>
             </button>
           </div>
         </div>
@@ -474,7 +476,7 @@ export default function Console() {
               showCells={layers.cells}
               showPeople={layers.people}
               showPath={layers.path}
-              showBasemap={layers.basemap}
+              basemap={basemap}
               cutoffMs={cutoffMs}
               selectedId={selected?.type === "person" ? selected.properties.person_id : null}
               onSelect={select}
@@ -499,7 +501,7 @@ export default function Console() {
               </span>
             )}
           </div>
-          {layers.basemap && <span className="c-attrib mono">© OpenStreetMap contributors</span>}
+          {basemap !== "off" && <span className="c-attrib mono">{BASEMAPS[basemap].attribution}</span>}
         </div>
 
         <Timeline people={people} manifest={manifest} windowSeconds={windowSeconds} />
@@ -575,7 +577,9 @@ export default function Console() {
               <Command.Item onSelect={() => { setPalette(false); toggle("people"); }}>Toggle people</Command.Item>
               <Command.Item onSelect={() => { setPalette(false); toggle("cells"); }}>Toggle density grid</Command.Item>
               <Command.Item onSelect={() => { setPalette(false); toggle("path"); }}>Toggle drone path</Command.Item>
-              <Command.Item onSelect={() => { setPalette(false); toggle("basemap"); }}>Toggle online basemap</Command.Item>
+              <Command.Item onSelect={() => { setPalette(false); setBasemap("satellite"); }}>Satellite basemap</Command.Item>
+              <Command.Item onSelect={() => { setPalette(false); setBasemap("streets"); }}>Street basemap</Command.Item>
+              <Command.Item onSelect={() => { setPalette(false); setBasemap("off"); }}>No basemap (offline)</Command.Item>
               {WINDOWS.map((w) => (
                 <Command.Item key={w.value} onSelect={() => { setPalette(false); setWindowSeconds(w.value); }}>
                   Show {w.value ? `people seen in the last ${w.label}` : "all people"}

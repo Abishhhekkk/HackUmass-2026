@@ -22,8 +22,8 @@ function seeded(seed) {
 
 // A lawnmower survey over ~260 x 180 m with nine people: used only when no mission is connected.
 function exampleMission() {
-  const lat0 = 42.3893;
-  const lon0 = -72.528;
+  const lat0 = 28.2087; // the demo area (Nepal), only when no mission is connected
+  const lon0 = 85.3552;
   const kx = Math.cos((lat0 * Math.PI) / 180) * 111320;
   const ky = 110540;
   const toLL = (x, y) => [lon0 + x / kx, lat0 + y / ky];
