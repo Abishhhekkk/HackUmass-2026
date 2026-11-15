@@ -341,10 +341,22 @@ export function useMission() {
         const norm = (t) => t.trim().toLowerCase().replace(/[?.!\s]+$/, "");
         const saved = savedAnswers.find((a) => norm(a.question) === norm(question));
         if (saved) return saved;
-        throw new Error(
-          "only the suggested questions can be answered on this copy of the site; " +
-            "other questions need the cloud service.",
-        );
+        // No saved Gemini answer for this question: answer with the mission report, as the live
+        // service does when Gemini is unavailable.
+        let report = aiReport?.report || "";
+        if (!report) {
+          try {
+            report = String(await request(DEMO, `/missions/x/files/report.md`));
+          } catch {
+            report = "";
+          }
+        }
+        if (!report) throw new Error("this question needs the cloud service.");
+        return {
+          answer: `Open questions need the live cloud service; here is the mission report, which covers the sightings, clusters and search radii.\n\n${report}`,
+          generated_by: "report",
+          tool_calls: [],
+        };
       }
       return request(base, `/missions/${encodeURIComponent(missionId)}/ask`, {
         method: "POST",
@@ -375,7 +387,7 @@ export function useMission() {
     flightPath,
     aiReport,
     savedAnswers,
-    canAsk: role === "cloud" || (role === "demo" && savedAnswers.length > 0),
+    canAsk: role === "cloud" || (role === "demo" && Boolean(manifest)),
     files,
     actions,
   };

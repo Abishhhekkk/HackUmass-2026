@@ -73,10 +73,74 @@ function useReveal() {
   }, []);
 }
 
-function VersionLanes({ m }) {
-  const { uploader, role, manifest, link } = m;
-  const local = uploader?.local_version ?? (role === "edge" || role === "demo" ? manifest?.version ?? 0 : null);
-  const cloud = uploader?.acked_version ?? (role === "cloud" || role === "demo" ? manifest?.version ?? 0 : null);
+// Plays the drone/cloud sync behaviour on the page itself (no edge connected, e.g. the public
+// site): cut the link, restore it, damage an upload. It drives only this picture, never a drone.
+function useLinkPlayback(startVersion) {
+  const [st, setSt] = useState({ local: null, cloud: null, offline: false, corrupt: false, running: false, note: "" });
+  const ref = useRef(st);
+  ref.current = st;
+  const base = Math.max(1, startVersion || 6);
+
+  useEffect(() => {
+    if (!st.running) return undefined;
+    const t = window.setInterval(() => {
+      setSt((s) => {
+        const local = (s.local ?? base) + 1;
+        if (local > base + 14) return { ...s, running: false };
+        if (s.offline) return { ...s, local };
+        if (s.corrupt) {
+          return {
+            ...s,
+            local,
+            corrupt: false,
+            note: `v${local} arrived damaged: the cloud checked its checksum and rejected it. The drone is sending it again.`,
+          };
+        }
+        return { ...s, local, cloud: local };
+      });
+    }, 1300);
+    return () => window.clearInterval(t);
+  }, [st.running, base]);
+
+  const now = (s) => ({ local: s.local ?? base, cloud: s.cloud ?? base });
+  return {
+    local: st.local ?? base,
+    cloud: st.cloud ?? base,
+    link: st.offline ? "offline" : "online",
+    offline: st.offline,
+    note: st.note,
+    cut() {
+      setSt((s) => ({
+        ...s, ...now(s), offline: true, running: true,
+        note: `Link cut. The drone keeps detecting and saving; the cloud stays at v${now(s).cloud}.`,
+      }));
+    },
+    restore() {
+      const { local, cloud } = now(ref.current);
+      setSt((s) => ({
+        ...s, ...now(s), offline: false, running: true,
+        note: `Link back. The cloud jumps straight from v${cloud} to v${local}: the versions in between are already contained in v${local}.`,
+      }));
+      window.setTimeout(() => setSt((s) => ({ ...s, cloud: s.local })), 700);
+    },
+    corrupt() {
+      setSt((s) => ({
+        ...s, ...now(s), corrupt: true, running: true,
+        note: s.offline ? "The next upload will arrive damaged once the link is back." : "The next upload will arrive damaged.",
+      }));
+    },
+  };
+}
+
+function VersionLanes({ m, play }) {
+  const { uploader, role, manifest } = m;
+  const link = play ? play.link : m.link;
+  const local = play
+    ? play.local
+    : uploader?.local_version ?? (role === "edge" || role === "demo" ? manifest?.version ?? 0 : null);
+  const cloud = play
+    ? play.cloud
+    : uploader?.acked_version ?? (role === "cloud" || role === "demo" ? manifest?.version ?? 0 : null);
   const top = Math.max(local || 0, cloud || 0, 1);
   const first = Math.max(1, top - 23);
   const ids = Array.from({ length: top - first + 1 }, (_, i) => first + i);
@@ -127,6 +191,8 @@ export default function Home() {
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
   const log = useRef(null);
+  const live = m.canDriveLink || m.canCorrupt;
+  const play = useLinkPlayback(m.manifest?.version);
   useReveal();
 
   useEffect(() => {
@@ -298,22 +364,36 @@ export default function Home() {
           </p>
         </div>
         <div className="link-board" data-reveal>
-          <VersionLanes m={m} />
+          <VersionLanes m={m} play={live ? null : play} />
           <div className="link-controls">
-            <button type="button" className="btn btn-ghost" disabled={busy || !m.canDriveLink || link === "offline"} onClick={() => drive("cut")}>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={live ? busy || !m.canDriveLink || link === "offline" : play.offline}
+              onClick={() => (live ? drive("cut") : play.cut())}
+            >
               Cut the link
             </button>
-            <button type="button" className="btn btn-ghost" disabled={busy || !m.canDriveLink || link !== "offline"} onClick={() => drive("restore")}>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={live ? busy || !m.canDriveLink || link !== "offline" : !play.offline}
+              onClick={() => (live ? drive("restore") : play.restore())}
+            >
               Restore it
             </button>
-            <button type="button" className="btn btn-ghost" disabled={busy || !m.canCorrupt} onClick={() => drive("fault")}>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={live ? busy || !m.canCorrupt : false}
+              onClick={() => (live ? drive("fault") : play.corrupt())}
+            >
               Corrupt the next upload
             </button>
             <p className="link-note" role="status">
-              {demoNote ||
-                (m.canDriveLink || m.canCorrupt
-                  ? "These controls act on the real edge pipeline."
-                  : "The controls come alive when Vantage runs from the Jetson (or the edge demo) with an uplink configured.")}
+              {live
+                ? demoNote || "These controls act on the real edge pipeline."
+                : play.note || "Try it: this shows how the drone and the cloud behave when the link drops."}
             </p>
           </div>
         </div>
@@ -378,7 +458,7 @@ export default function Home() {
                 {m.canAsk ? (
                   <>
                     <span className="label">Try</span>
-                    {(role === "demo" ? m.savedAnswers.map((a) => a.question) : QUESTIONS).map((q) => (
+                    {(role === "demo" && m.savedAnswers.length ? m.savedAnswers.map((a) => a.question) : QUESTIONS).map((q) => (
                       <button type="button" key={q} onClick={() => ask(q)} disabled={!m.missionId}>
                         {q}
                         <ArrowRight size={14} />
@@ -398,7 +478,9 @@ export default function Home() {
             )}
             {messages.map((msg, i) => (
               <div key={i} className={`msg msg-${msg.who}`}>
-                <span className="label">{msg.who === "you" ? "You" : msg.by === "gemini" ? "Vantage · Gemini" : "Vantage"}</span>
+                <span className="label">
+                  {msg.who === "you" ? "You" : msg.by === "gemini" ? "Vantage · Gemini" : msg.by === "report" ? "Vantage · mission report" : "Vantage"}
+                </span>
                 <p>{msg.text}</p>
                 {msg.tools?.length > 0 && (
                   <span className="msg-tools mono">used {[...new Set(msg.tools.map((t) => t.tool || t.name || t))].join(", ")}</span>
@@ -409,7 +491,7 @@ export default function Home() {
           </div>
           {m.canAsk && messages.length > 0 && (
             <div className="ask-chips">
-              {(role === "demo" ? m.savedAnswers.map((a) => a.question) : QUESTIONS).map((q) => (
+              {(role === "demo" && m.savedAnswers.length ? m.savedAnswers.map((a) => a.question) : QUESTIONS).map((q) => (
                 <button type="button" key={q} onClick={() => ask(q)} disabled={asking}>
                   {q}
                 </button>
@@ -430,7 +512,7 @@ export default function Home() {
                 role === "cloud"
                   ? "Ask about this mission"
                   : m.canAsk
-                    ? "Pick a question above"
+                    ? "Ask about this mission"
                     : "Available on the cloud service"
               }
               disabled={!m.canAsk || asking}
