@@ -315,6 +315,30 @@
 .map-zoom button:hover {
   background: var(--ink-3);
 }
+.map-follow {
+  position: absolute;
+  z-index: 500;
+  right: 14px;
+  bottom: 122px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.map-follow button {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: rgba(16, 19, 17, 0.92);
+  color: var(--bone-3);
+}
+.map-follow button:hover {
+  background: var(--ink-3);
+}
+.map-follow button.on {
+  color: var(--sky);
+}
 .c-empty {
   position: absolute;
   inset: 0;
@@ -367,6 +391,13 @@
 .lg-path {
   width: 20px;
   border-top: 2px dotted var(--sky);
+}
+.lg-drone {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--sky);
+  background: var(--sky-soft);
 }
 .lg-heat i {
   width: 9px;

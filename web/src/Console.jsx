@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { LINK_LABEL, UNLOCATED_REASONS, clock, coord, describeReport, num, useMission } from "./lib.jsx";
-import { HEAT, MapView, Wordmark } from "./ui.jsx";
+import { HEAT, MapView, Wordmark, dronePosition } from "./ui.jsx";
 
 const WINDOWS = [
   { value: 0, label: "All" },
@@ -492,6 +492,7 @@ export default function Console() {
           <div className="c-legend">
             <span><i className="lg-person" /> Estimated person</span>
             <span><i className="lg-ring" /> Error radius</span>
+            {dronePosition(flightPath) && <span><i className="lg-drone" /> Drone position</span>}
             {layers.path && flightPath?.features?.length > 0 && <span><i className="lg-path" /> Drone path · not sightings</span>}
             {layers.cells && (
               <span className="lg-heat">

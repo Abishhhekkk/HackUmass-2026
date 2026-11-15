@@ -223,6 +223,23 @@ svg {
   box-shadow: 0 0 0 2px var(--ink-0), 0 0 0 4px var(--signal);
 }
 
+/* The drone: sky blue, a ring rather than a dot, so it never reads as a sighting. */
+.v-drone {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+}
+
+.v-drone i {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--sky);
+  background: var(--sky-soft);
+  box-shadow: 0 0 0 2px var(--ink-0), 0 0 0 7px var(--sky-soft);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

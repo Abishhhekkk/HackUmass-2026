@@ -1,5 +1,5 @@
 // Vantage UI pieces shared by the home page and mission control.
-import { Fragment, useCallback, useEffect, useMemo, useRef } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Circle, MapContainer, Marker, Polygon, Polyline, TileLayer, Tooltip, useMap } from "react-leaflet";
 import L from "leaflet";
 
@@ -34,8 +34,27 @@ const personIcon = (selected) =>
   });
 const ICON = personIcon(false);
 const ICON_SELECTED = personIcon(true);
+const DRONE_ICON = L.divIcon({
+  className: "v-drone",
+  html: "<i></i>",
+  iconSize: [22, 22],
+  iconAnchor: [11, 11],
+});
 
-function Fit({ points }) {
+/**
+ * The drone's latest GPS position as [lat, lon], or null before the first valid fix. The cloud
+ * sends it as flightPath.properties.last_valid; the end of the newest track segment is the fallback.
+ */
+export function dronePosition(flightPath) {
+  const fix = flightPath?.properties?.last_valid;
+  if (fix && Number.isFinite(fix.lat) && Number.isFinite(fix.lon)) return [fix.lat, fix.lon];
+  const segments = flightPath?.features || [];
+  const coords = segments[segments.length - 1]?.geometry?.coordinates;
+  const last = coords?.[coords.length - 1];
+  return last ? [last[1], last[0]] : null;
+}
+
+function Fit({ points, active = true }) {
   const map = useMap();
   const moved = useRef(false);
   const key = points.map((p) => p.join(",")).join(";");
@@ -45,8 +64,8 @@ function Fit({ points }) {
   }, [map, key]);
 
   useEffect(() => {
-    if (!moved.current) fit();
-  }, [fit]);
+    if (active && !moved.current) fit();
+  }, [fit, active]);
 
   useEffect(() => {
     const container = map.getContainer();
@@ -57,7 +76,7 @@ function Fit({ points }) {
     container.addEventListener("wheel", mark, { passive: true });
     const observer = new ResizeObserver(() => {
       map.invalidateSize({ pan: false });
-      if (!moved.current) fit();
+      if (active && !moved.current) fit();
     });
     observer.observe(container);
     return () => {
@@ -65,8 +84,56 @@ function Fit({ points }) {
       map.off("dragstart", mark);
       container.removeEventListener("wheel", mark);
     };
-  }, [map, fit]);
+  }, [map, fit, active]);
   return null;
+}
+
+/**
+ * Draws the drone at its latest fix and, while `follow` is on, keeps the map centred on it as new
+ * fixes arrive. Dragging the map hands control back to the operator; the button takes it again.
+ */
+function DroneLayer({ position, follow, setFollow, interactive }) {
+  const map = useMap();
+  const lat = position?.[0];
+  const lon = position?.[1];
+  const placed = useRef(false);
+
+  useEffect(() => {
+    if (!follow || lat === undefined) return;
+    // The first jump is instant (the map starts on a default location); later fixes glide.
+    map.setView([lat, lon], map.getZoom(), { animate: placed.current, pan: { duration: 0.6 } });
+    placed.current = true;
+  }, [map, follow, lat, lon]);
+
+  useEffect(() => {
+    const release = () => setFollow(false);
+    map.on("dragstart", release);
+    return () => map.off("dragstart", release);
+  }, [map, setFollow]);
+
+  if (!position) return null;
+  return (
+    <>
+      <Marker position={position} icon={DRONE_ICON} interactive={false} keyboard={false} zIndexOffset={1000} />
+      {interactive && (
+        <div className="map-follow">
+          <button
+            type="button"
+            className={follow ? "on" : ""}
+            aria-pressed={follow}
+            aria-label={follow ? "Following the drone" : "Centre the map on the drone"}
+            title={follow ? "Following the drone. Drag the map to stop." : "Centre on the drone and follow it"}
+            onClick={() => setFollow(true)}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="2" />
+              <path d="M12 2v5M12 17v5M2 12h5M17 12h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+      )}
+    </>
+  );
 }
 
 function Zoom() {
@@ -95,8 +162,13 @@ export function MapView({
   selectedId = null,
   onSelect,
   interactive = true,
+  followDrone = true,
   className = "",
 }) {
+  const [follow, setFollow] = useState(followDrone);
+  const dronePos = dronePosition(flightPath);
+  // With a drone fix and follow on, the drone sets the view. Otherwise the map fits the sightings.
+  const following = follow && dronePos !== null;
   const points = useMemo(() => {
     const result = people.map((f) => [f.geometry.coordinates[1], f.geometry.coordinates[0]]);
     if (!result.length) {
@@ -123,7 +195,8 @@ export function MapView({
       preferCanvas
     >
       {showBasemap && <TileLayer url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" maxZoom={19} />}
-      <Fit points={points} />
+      <Fit points={points} active={!following} />
+      <DroneLayer position={dronePos} follow={follow} setFollow={setFollow} interactive={interactive} />
       {interactive && <Zoom />}
       {showPath &&
         (flightPath?.features || []).map((seg, i) => (
