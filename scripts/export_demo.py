@@ -25,7 +25,7 @@ OUT = ROOT / "web" / "public" / "demo"
 # let the static site answer these questions. Keep in step with QUESTIONS in web/src/Home.jsx.
 QUESTIONS = [
     "Where is the densest cluster of sightings?",
-    "Which sightings have the largest position error?",
+    "Which sightings have the largest search radius?",
     "Summarise this mission for the incident commander.",
 ]
 FILES = ["sightings.csv", "heatmap.geojson", "report.md", "telemetry.json", "manifest.json", "flight_path.csv"]

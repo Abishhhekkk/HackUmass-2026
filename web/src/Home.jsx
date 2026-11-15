@@ -46,7 +46,7 @@ const MEASURED = [
 
 const QUESTIONS = [
   "Where is the densest cluster of sightings?",
-  "Which sightings have the largest position error?",
+  "Which sightings have the largest search radius?",
   "Summarise this mission for the incident commander.",
 ];
 
@@ -177,7 +177,7 @@ export default function Home() {
     ["Detections", num(summary.detections_processed)],
     ["People placed", num(summary.estimated_people)],
     ["Not placed", num(summary.unlocated_tracks)],
-    ["Median error", summary.median_error_m !== undefined ? `±${summary.median_error_m} m` : "—"],
+    ["Median radius", summary.median_error_m !== undefined ? `±${summary.median_error_m} m` : "—"],
     ["Snapshot", manifest ? `v${manifest.version}` : "—"],
   ];
 
@@ -197,7 +197,7 @@ export default function Home() {
     {
       n: "03",
       title: "Place",
-      body: "Each person is projected to the ground from the camera's pose, with an error radius. Bad pose: kept, unplaced, with the reason.",
+      body: "Each person is projected to the ground from the camera's pose, with an estimated search radius. Bad pose: kept, unplaced, with the reason.",
       value: manifest ? `${num(summary.estimated_people)} placed · ${num(summary.unlocated_tracks)} not` : "waiting",
     },
     {

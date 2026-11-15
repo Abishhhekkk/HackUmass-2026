@@ -96,7 +96,7 @@ function Inspect({ selected, people, onSelect }) {
         <dl className="facts">
           <dt>Position</dt>
           <dd className="mono">{coord(selected.lat, selected.lon)}</dd>
-          <dt>Error radius</dt>
+          <dt>Search radius</dt>
           <dd className="mono">±{p.horizontal_error_m} m</dd>
           <dt>Confidence</dt>
           <dd className="mono">{Math.round((p.confidence || 0) * 100)}%</dd>
@@ -152,7 +152,7 @@ function PeopleList({ people, onSelect }) {
     <ol className="rows">
       <li className="rows-head label">
         <span>ID</span>
-        <span>Error</span>
+        <span>Radius</span>
         <span>Conf.</span>
         <span>Last seen</span>
       </li>
@@ -378,8 +378,8 @@ export default function Console() {
             <Reading label="Cells" value={num(summary.occupied_cells)} />
           </div>
           <div className="reading-pair">
-            <Reading label="Median error" value={summary.median_error_m ?? "—"} unit="m" />
-            <Reading label="90% error" value={summary.p90_error_m ?? "—"} unit="m" />
+            <Reading label="Median radius" value={summary.median_error_m ?? "—"} unit="m" />
+            <Reading label="90% radius" value={summary.p90_error_m ?? "—"} unit="m" />
           </div>
           <div className="reading-pair">
             <Reading label="Frames" value={num(status?.frames ?? summary.frames_processed)} />
@@ -500,7 +500,7 @@ export default function Console() {
           )}
           <div className="c-legend">
             <span><i className="lg-person" /> Estimated person</span>
-            <span><i className="lg-ring" /> Error radius</span>
+            <span><i className="lg-ring" /> Search radius</span>
             {layers.path && flightPath?.features?.length > 0 && <span><i className="lg-path" /> Drone path · not sightings</span>}
             {layers.cells && (
               <span className="lg-heat">
