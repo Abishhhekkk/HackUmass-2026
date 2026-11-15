@@ -134,6 +134,18 @@ CPU run in development, not on the Jetson):
 | ByteTrack | 103 | 6 (1%) | 97 | 0 |
 | BoT-SORT (camera-motion compensation) | 406 | 305 (62%) | 100 | 1 |
 
-Limits: panning a still image has no moving people, occlusion or blur; the three images are
-the densest in the set (~160 people each). The optical-flow cost on the Jetson is not measured
-yet (`eval_counting.py` prints the total time).
+On the Jetson (Orin Nano Super, TensorRT FP16 fine-tuned engine), 20 panned sequences, 2,292
+labelled people, 60 frames each, every 3rd frame evaluated:
+
+| tracker | counted | real people found | false tracks | duplicates | time, 400 frames |
+|---|---|---|---|---|---|
+| ByteTrack | 1,329 | 456 (20%) | 842 | 31 | 78 s |
+| BoT-SORT | 2,194 | 1,551 (68%) | 595 | 48 | 102 s |
+
+BoT-SORT adds ~60 ms per processed frame here (the times include reading images from disk).
+In the full pipeline on the 1,883-frame (~63 s) simulated clip it still kept real time: every
+scheduled frame was processed (142 search + 439 active) and the run took ~63 s.
+
+Limits: panning a still image has no moving people, occlusion or blur. The 68% is "found at
+least once"; the near-correct total (2,194 vs 2,292) is partly misses and false tracks
+cancelling out.
