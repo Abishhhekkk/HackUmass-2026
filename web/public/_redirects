@@ -1,0 +1,3 @@
+# Netlify: /dashboard (without #) opens mission control; any other path opens the site.
+/dashboard  /#/dashboard  301
+/*          /index.html    200

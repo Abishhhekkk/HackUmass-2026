@@ -16,7 +16,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { LINK_LABEL, UNLOCATED_REASONS, clock, coord, describeReport, num, useMission } from "./lib.jsx";
+import { LINK_LABEL, NO_SERVICE, UNLOCATED_REASONS, clock, coord, describeReport, num, useMission } from "./lib.jsx";
 import { BASEMAPS, HEAT, MapView, Wordmark } from "./ui.jsx";
 
 const WINDOWS = [
@@ -350,7 +350,7 @@ export default function Console() {
         </label>
         <span className={`c-chip tone-${link}`}>
           <i className={`dot ${status?.running ? "live" : ""}`} />
-          <span className="mono">{m.error && !status ? "Service unreachable" : LINK_LABEL[link]}</span>
+          <span className="mono">{m.error === NO_SERVICE ? "Website only" : m.error && !status ? "Service unreachable" : LINK_LABEL[link]}</span>
         </span>
         <span className="c-top-right">
           <span className="c-source mono">{m.role === "cloud" ? "CLOUD" : m.role === "edge" ? "ON BOARD" : "—"}</span>
@@ -361,7 +361,7 @@ export default function Console() {
         </span>
       </header>
 
-      {m.error && (
+      {m.error && m.error !== NO_SERVICE && (
         <div className="c-error" role="alert">
           <span className="mono">{m.error}</span>
           <button type="button" onClick={m.actions.refresh}>Retry</button>
@@ -483,12 +483,17 @@ export default function Console() {
             />
           ) : (
             <div className="c-empty">
-              <span className="label">{m.loaded ? (m.error ? "Not connected" : "No mission yet") : "Connecting"}</span>
+              <span className="label">
+                {m.loaded ? (m.error === NO_SERVICE ? "Website only" : m.error ? "Not connected" : "No mission yet") : "Connecting"}
+              </span>
               <p>
-                {m.error
-                  ? "The map comes back as soon as the service answers."
-                  : "Start the edge pipeline, or wait for the drone's first snapshot to reach the cloud."}
+                {m.error === NO_SERVICE
+                  ? "This copy of Vantage has no mission service behind it. Live missions appear on the Jetson's dashboard and on the cloud API's address."
+                  : m.error
+                    ? "The map comes back as soon as the service answers."
+                    : "Start the edge pipeline, or wait for the drone's first snapshot to reach the cloud."}
               </p>
+              <a className="btn btn-ghost" href="#/">See the example flight on the home page</a>
             </div>
           )}
           <div className="c-legend">

@@ -11,8 +11,19 @@ const PRIMARY = "/api/v1";
 const EDGE = import.meta.env.DEV ? "/edge-api/api/v1" : null;
 export const POLL_MS = 3000;
 
+export const NO_SERVICE =
+  "No mission service at this address. This copy of Vantage is the website only; live missions are on the Jetson and the cloud API.";
+
 async function request(base, path, options) {
   const response = await fetch(`${base}${path}`, options);
+  const type = response.headers.get("content-type") || "";
+  // A static host (Netlify, Vercel) answers API paths with its own HTML page, not our JSON.
+  if (type.includes("text/html")) {
+    const error = new Error(NO_SERVICE);
+    error.status = response.status;
+    error.noService = true;
+    throw error;
+  }
   if (!response.ok) {
     const body = await response.text();
     let detail = body;
@@ -25,7 +36,6 @@ async function request(base, path, options) {
     error.status = response.status;
     throw error;
   }
-  const type = response.headers.get("content-type") || "";
   return type.includes("json") ? response.json() : response.text();
 }
 

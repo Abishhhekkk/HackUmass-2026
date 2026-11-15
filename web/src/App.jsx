@@ -3,7 +3,10 @@ import { useEffect, useState } from "react";
 import Console from "./Console.jsx";
 import Home from "./Home.jsx";
 
-const route = () => (window.location.hash.startsWith("#/dashboard") ? "dashboard" : "home");
+const route = () =>
+  window.location.hash.startsWith("#/dashboard") || /^\/dashboard\/?$/.test(window.location.pathname)
+    ? "dashboard"
+    : "home";
 
 export default function App() {
   const [page, setPage] = useState(route);

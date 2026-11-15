@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowDownRight, ArrowRight, CornerDownLeft } from "lucide-react";
 import Replay from "./Replay.jsx";
-import { LINK_LABEL, clock, num, useMission } from "./lib.jsx";
+import { LINK_LABEL, NO_SERVICE, clock, num, useMission } from "./lib.jsx";
 import { Mark, Wordmark } from "./ui.jsx";
 
 const MEASURED = [
@@ -209,7 +209,7 @@ export default function Home() {
         </nav>
         <span className={`nav-link-state tone-${link}`}>
           <i className={`dot ${link === "online" || link === "pending" ? "live" : ""}`} />
-          <span className="mono">{m.error && !status ? "No service" : LINK_LABEL[link]}</span>
+          <span className="mono">{m.error === NO_SERVICE ? "Website only" : m.error && !status ? "No service" : LINK_LABEL[link]}</span>
         </span>
         <a className="btn btn-signal" href="#/dashboard">
           Mission control <ArrowRight size={15} />
