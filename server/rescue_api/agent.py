@@ -13,6 +13,7 @@ Pinned: langchain-core==1.8.0, langchain-google-genai==4.5.0 (see server/require
 from __future__ import annotations
 
 import json
+import math
 import os
 import statistics
 import csv
@@ -29,11 +30,27 @@ SYSTEM_PROMPT = """You write short situation reports for search-and-rescue coord
 Use ONLY facts returned by the tools. Every location is an ESTIMATE from drone camera geometry
 with the stated horizontal error; every count is "estimated people", never confirmed people.
 Describe where estimated people cluster, relative to named landmarks from find_nearby_landmarks
-(give the landmark name, its distance, and say the data is from OpenStreetMap). Mention data gaps
+(give the landmark name, its distance, and say the data is from OpenStreetMap). Also call
+find_hazard_relevant_features for the centre of the densest cell, using the hazard type given in
+the request, and name the relevant features (for a fire: nearest water body, open ground, major
+roads) with straight-line miles and compass direction from the cluster. Say which source_used
+supplied them (Google Maps via Gemini, or the OpenStreetMap fallback), and say plainly if a
+category was not found. For a large water body the distance may be to its centre. This is
+reference information only: do not give firefighting, evacuation or dispatch instructions.
+Mention data gaps
 (unlocated sightings, location failures) and the data time window. Do NOT assign rescue teams,
-rank who to rescue first, or give instructions to the drone. End with the line:
+rank who to rescue first, recommend dispatching any crew, or give instructions to the drone.
+End with the line:
 "Human review required - estimates only."
-Format: Markdown, under 250 words."""
+Format: Markdown, under 300 words."""
+
+
+def _mission_hazard() -> str:
+    """Hazard type for the report (fire, flood or general), from HAZARD_TYPE in env or .env."""
+    from dotenv import dotenv_values
+
+    value = os.environ.get("HAZARD_TYPE") or dotenv_values(REPO / ".env").get("HAZARD_TYPE") or ""
+    return _hazard_key(value)
 
 
 def _now() -> str:
@@ -117,6 +134,220 @@ out center {limit * 3};"""
     out.sort(key=lambda x: x["distance_m"])
     return {"source": "OpenStreetMap contributors via Overpass API", "fetched_at": _now(),
             "landmarks": out[:limit]}
+
+
+METERS_PER_MILE = 1609.344
+_COMPASS = ("north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest")
+
+
+def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Initial compass bearing from point 1 to point 2, degrees clockwise from true north."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dl = math.radians(lon2 - lon1)
+    y = math.sin(dl) * math.cos(p2)
+    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
+def _compass(bearing: float) -> str:
+    return _COMPASS[int((bearing + 22.5) // 45) % 8]
+
+
+# What matters near a search area depends on the hazard. Each category is a set of OSM tag filters
+# (OSM fallback) and a plain-words description (Gemini Maps prompt).
+FEATURE_CATEGORIES = {
+    "water": (["natural=water", 'waterway~"^(river|stream|canal)$"'],
+              "water bodies (lakes, ponds, rivers, streams)"),
+    "open_ground": (['leisure~"^(park|pitch|common)$"', 'landuse~"^(meadow|grass|recreation_ground)$"'],
+                    "large open areas (parks, fields, clearings)"),
+    "major_road": (['highway~"^(motorway|trunk|primary|secondary)$"'], "major roads"),
+    "shelter": (['amenity~"^(school|community_centre|hospital|shelter)$"', "emergency=assembly_point"],
+                "possible shelters (schools, community centres, hospitals, assembly points)"),
+    "bridge": (["man_made=bridge"], "bridges"),
+}
+HAZARD_PROFILES = {
+    "fire": ("water", "open_ground", "major_road"),
+    "flood": ("water", "shelter", "bridge", "major_road"),
+    "general": ("water", "shelter", "major_road"),
+}
+DEFAULT_FEATURE_RADIUS_M = 3000
+PER_CATEGORY = 2
+
+
+def _hazard_key(hazard: str | None) -> str:
+    key = (hazard or "").strip().lower()
+    return key if key in HAZARD_PROFILES else "general"
+
+
+def _element_points(el: dict) -> list[tuple[float, float]]:
+    if "lat" in el and "lon" in el:
+        return [(el["lat"], el["lon"])]
+    pts = [(g["lat"], g["lon"]) for g in el.get("geometry") or [] if g]
+    for member in el.get("members") or []:
+        pts += [(g["lat"], g["lon"]) for g in member.get("geometry") or [] if g]
+    if not pts and el.get("center"):
+        pts = [(el["center"]["lat"], el["center"]["lon"])]
+    return pts
+
+
+def _feature(category: str, name: str | None, kind: str, lat: float, lon: float,
+             to_lat: float, to_lon: float, distance_is_to: str) -> dict:
+    from .storage import _haversine
+
+    d = _haversine(lat, lon, to_lat, to_lon)
+    bearing = _bearing_deg(lat, lon, to_lat, to_lon)
+    return {"category": category, "name": name or f"unnamed {category.replace('_', ' ')}", "kind": kind,
+            "distance_m": round(d), "distance_miles": round(d / METERS_PER_MILE, 2),
+            "direction": _compass(bearing), "bearing_deg": round(bearing),
+            "point": {"lat": round(to_lat, 6), "lon": round(to_lon, 6)}, "distance_is_to": distance_is_to}
+
+
+def _nearest_features(elements: list[dict], category: str, lat: float, lon: float) -> list[dict]:
+    """Per element, the nearest mapped point (shoreline vertex, road vertex...), then closest first."""
+    from .storage import _haversine
+
+    out = []
+    for el in elements:
+        pts = _element_points(el)
+        if not pts:
+            continue
+        la, lo = min(pts, key=lambda pt: _haversine(lat, lon, pt[0], pt[1]))
+        tags = el.get("tags", {})
+        kind = next((f"{k}={tags[k]}" for k in ("natural", "waterway", "leisure", "landuse", "highway",
+                                                  "amenity", "emergency", "man_made") if k in tags), category)
+        out.append(_feature(category, tags.get("name"), kind, lat, lon, la, lo, "nearest mapped point"))
+    out.sort(key=lambda f: f["distance_m"])
+    # one entry per name (a river is many ways), unnamed ones are kept once
+    seen, unique = set(), []
+    for f in out:
+        if f["name"] in seen:
+            continue
+        seen.add(f["name"])
+        unique.append(f)
+    return unique[:PER_CATEGORY]
+
+
+def fetch_hazard_features_osm(lat: float, lon: float, hazard: str = "general",
+                              radius_m: float = DEFAULT_FEATURE_RADIUS_M) -> dict:
+    """Fallback: hazard-relevant features from OpenStreetMap with exact distance/direction."""
+    hazard = _hazard_key(hazard)
+    features, missing = [], []
+    for category in HAZARD_PROFILES[hazard]:
+        filters = FEATURE_CATEGORIES[category][0]
+        parts = "".join(f"  {kind}(around:{radius_m:.0f},{lat:.6f},{lon:.6f})[{f}];\n"
+                        for f in filters for kind in ("node", "way", "relation"))
+        q = f"[out:json][timeout:20];\n(\n{parts});\nout geom 40;"
+        r = requests.post(OVERPASS_URL, data={"data": q}, timeout=25,
+                          headers={"User-Agent": "RescueSight-HackUMass/0.1"})
+        r.raise_for_status()
+        found = _nearest_features(r.json().get("elements", []), category, lat, lon)
+        features += found
+        if not found:
+            missing.append(category)
+    features.sort(key=lambda f: f["distance_m"])
+    return {"hazard": hazard, "radius_m": round(radius_m), "features": features,
+            "none_mapped_within_radius": missing,
+            "note": "Straight-line distance and compass direction from the given point to the nearest "
+                    "mapped point of each feature. OpenStreetMap may be incomplete or out of date.",
+            "source": "OpenStreetMap contributors via Overpass API", "fetched_at": _now()}
+
+
+MAPS_PROMPT = (
+    "Using Google Maps, list real places near latitude {lat:.6f}, longitude {lon:.6f}, within "
+    "{radius_m:.0f} metres, in these categories: {categories}. Give the closest one or two per "
+    "category that exist. Reply with ONLY one JSON object: {{\"features\": [{{\"category\": "
+    "(one of {keys}), \"name\": string, \"latitude\": number, \"longitude\": number}}]}}. "
+    "Do not invent places; leave a category out if there is none."
+)
+
+
+def _extract_json(text: str) -> dict | None:
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        obj = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def fetch_hazard_features_via_gemini_maps(lat: float, lon: float, hazard: str = "general",
+                                          radius_m: float = DEFAULT_FEATURE_RADIUS_M,
+                                          client=None) -> dict:
+    """Gemini grounded in Google Maps lists nearby hazard-relevant places; distance and direction
+    are then recomputed locally from the coordinates it returns (implausible ones are dropped).
+    A separate Maps-only Gemini call. Never raises."""
+    settings = _ai_settings()
+    if client is None and not settings["GEMINI_API_KEY"]:
+        return {"available": False, "reason": "no GEMINI_API_KEY"}
+    hazard = _hazard_key(hazard)
+    keys = HAZARD_PROFILES[hazard]
+    try:
+        from google.genai import types
+
+        if client is None:
+            from google import genai
+
+            client = genai.Client(api_key=settings["GEMINI_API_KEY"])
+        response = client.models.generate_content(
+            model=os.environ.get("GEMINI_MAPS_MODEL") or settings["GEMINI_MODEL"],
+            contents=MAPS_PROMPT.format(
+                lat=lat, lon=lon, radius_m=radius_m, keys="/".join(keys),
+                categories="; ".join(f"{k} = {FEATURE_CATEGORIES[k][1]}" for k in keys)),
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_maps=types.GoogleMaps())],
+                tool_config=types.ToolConfig(retrieval_config=types.RetrievalConfig(
+                    lat_lng=types.LatLng(latitude=lat, longitude=lon))),
+                temperature=0.0,
+            ),
+        )
+        data = _extract_json(getattr(response, "text", "") or "")
+        if data is None or not isinstance(data.get("features"), list):
+            return {"available": False, "reason": "Gemini returned no parsable answer"}
+        from .storage import _haversine
+
+        features, per_cat, dropped = [], {}, 0
+        for item in data["features"]:
+            try:
+                cat, name = item["category"], item.get("name")
+                f_lat, f_lon = float(item["latitude"]), float(item["longitude"])
+                if (cat not in keys or not -90 <= f_lat <= 90 or not -180 <= f_lon <= 180
+                        or _haversine(lat, lon, f_lat, f_lon) > radius_m * 1.5):
+                    raise ValueError
+            except (KeyError, TypeError, ValueError):
+                dropped += 1
+                continue
+            features.append(_feature(cat, name, cat, lat, lon, f_lat, f_lon,
+                                     "the place point Gemini gave (a large water body's point may "
+                                     "be its centre, so the shore can be closer)"))
+        features.sort(key=lambda f: f["distance_m"])
+        kept = []
+        for f in features:
+            per_cat[f["category"]] = per_cat.get(f["category"], 0) + 1
+            if per_cat[f["category"]] <= PER_CATEGORY:
+                kept.append(f)
+        if not kept:
+            return {"available": False, "reason": "Gemini returned no usable places"}
+        sources, seen = [], set()
+        for cand in (getattr(response, "candidates", None) or [])[:1]:
+            meta = getattr(cand, "grounding_metadata", None)
+            for chunk in (getattr(meta, "grounding_chunks", None) or []):
+                m = getattr(chunk, "maps", None)
+                uri = getattr(m, "uri", None)
+                if m is not None and uri and uri not in seen:
+                    seen.add(uri)
+                    sources.append({"title": getattr(m, "title", None), "uri": uri})
+        return {"available": True, "hazard": hazard, "radius_m": round(radius_m), "features": kept,
+                "none_found_within_radius": [k for k in keys if k not in per_cat],
+                "dropped_implausible": dropped, "grounded": bool(sources),
+                "google_maps_sources": sources[:5],
+                "note": "Distance and direction are computed here from the coordinates Gemini "
+                        "returned; straight-line, not travel distance.",
+                "source": "Google Maps via Gemini API (Grounding with Google Maps)",
+                "fetched_at": _now()}
+    except Exception as error:
+        return {"available": False, "reason": f"Gemini Maps lookup failed: {_safe_error(error)}"}
 
 
 def make_tools(store, mission_id: str, row: dict):
@@ -217,6 +448,26 @@ def make_tools(store, mission_id: str, row: dict):
         except Exception as e:
             return {"error": f"landmark lookup failed: {type(e).__name__}", "landmarks": []}
 
+    @tool
+    def find_hazard_relevant_features(lat: float, lon: float, hazard: str = "general",
+                                      radius_m: float = DEFAULT_FEATURE_RADIUS_M) -> dict:
+        """Landmarks that matter for the hazard near a point (use the densest cell's centre).
+        hazard: fire (water bodies, open ground, major roads), flood (water, shelters, bridges,
+        roads) or general. Found by Gemini grounded in Google Maps, with distance and direction
+        computed locally; falls back to OpenStreetMap if Gemini is unavailable. radius_m max 10000.
+        Reference only, not operational advice."""
+        lat, lon = _clamp(lat, -90, 90), _clamp(lon, -180, 180)
+        radius_m = _clamp(radius_m, 200, 10000)
+        maps = fetch_hazard_features_via_gemini_maps(lat, lon, hazard, radius_m)
+        if maps.get("available"):
+            return {"source_used": "gemini_google_maps", **maps}
+        try:
+            osm = fetch_hazard_features_osm(lat, lon, hazard, radius_m)
+        except Exception as e:
+            osm = {"error": f"feature lookup failed: {type(e).__name__}", "features": []}
+        return {"source_used": "openstreetmap_fallback", **osm,
+                "gemini_unavailable_reason": maps.get("reason")}
+
     return [
         get_mission_summary,
         get_latest_drone_gps,
@@ -226,6 +477,7 @@ def make_tools(store, mission_id: str, row: dict):
         get_densest_cells,
         get_people_near,
         find_nearby_landmarks,
+        find_hazard_relevant_features,
     ]
 
 
@@ -268,10 +520,11 @@ def answer_question(store, mission_id: str, row: dict, deterministic: str,
         by_name = {tool.name: tool for tool in tools}
         bound = llm.bind_tools(tools)
         messages = [
-            SystemMessage(SYSTEM_PROMPT + """
+            SystemMessage(SYSTEM_PROMPT + f"""
 Answer the user's mission question with concise, cited facts from the tools. Prefer tool data
 over assumptions. You may explain the latest drone GPS position, estimated sightings and
-uncertainty, data gaps, and nearby OpenStreetMap landmarks. Do not instruct users to dispatch
+uncertainty, data gaps, nearby OpenStreetMap landmarks, and hazard-relevant features such as water bodies (name,
+straight-line miles and compass direction, via find_hazard_relevant_features; hazard type: {_mission_hazard()}). Do not instruct users to dispatch
 responders, assign rescue teams, rank who to rescue, or control a drone. Never describe a drone
 GPS fix as a person's location. If information is unavailable, say so."""),
             HumanMessage(f"Mission: {mission_id}. User question: {question}"),
@@ -326,7 +579,8 @@ def generate_report(store, mission_id: str, row: dict, deterministic: str, llm=N
         msgs = [SystemMessage(SYSTEM_PROMPT),
                 HumanMessage("Write the situation report for this mission. Start by calling "
                              "get_mission_summary and get_densest_cells, then look up landmarks "
-                             "near the densest cells.")]
+                             "near the densest cells and the hazard-relevant features near the "
+                             f"densest cell. The hazard type is {_mission_hazard()}.")]
         calls_log = []
         for _ in range(MAX_STEPS):
             ai = bound.invoke(msgs)

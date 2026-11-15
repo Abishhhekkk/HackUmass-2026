@@ -284,6 +284,7 @@ def create_app(storage: Storage | None = None) -> FastAPI:
                 "get_densest_cells",
                 "get_people_near",
                 "find_nearby_landmarks",
+                "find_hazard_relevant_features",
             ],
         }
 

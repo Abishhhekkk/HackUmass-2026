@@ -77,7 +77,16 @@ does not load or bundle the root file. The cloud dashboard's AI summary calls
 After a snapshot upload is accepted, the cloud API automatically schedules a mission report.
 The dashboard polls `GET /api/v1/missions/<id>/ai-report` and presents it when ready; the report
 uses the allow-listed, read-only mission tools, including frame-aligned drone GPS, sightings,
-data gaps, and OpenStreetMap landmarks. Without an available Gemini integration/key, it records
+data gaps, OpenStreetMap landmarks, and hazard-relevant features near the densest cluster. Set `HAZARD_TYPE` (`fire`, `flood` or
+`general`, default `general`) to choose what to look for: for `fire`, the nearest water body, open
+ground and major roads; for `flood`, water, shelters, bridges and roads. A separate Gemini call
+grounded in Google Maps (`google-genai` SDK; model `GEMINI_MAPS_MODEL`, default `GEMINI_MODEL`)
+finds the places; distance and compass direction are then computed locally from the coordinates it
+returns, and implausible ones are dropped. Only if Gemini is unavailable does it fall back to
+OpenStreetMap (Overpass), measuring to the nearest mapped shoreline or road point. The report says
+which source was used. Check that Maps grounding is enabled and billed for your key, and show the
+returned Google Maps source links wherever the report is displayed. This is reference information,
+not firefighting or evacuation advice. Without an available Gemini integration/key, it records
 a deterministic report instead. Mission Q&A calls `POST /api/v1/missions/<id>/ask`; the
 on-demand report endpoint is `POST /api/v1/missions/<id>/ai-report`. Reports are optional cloud
 outputs and do not participate in onboard inference or snapshot creation.
