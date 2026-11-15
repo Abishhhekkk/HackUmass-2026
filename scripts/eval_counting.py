@@ -38,6 +38,8 @@ def main() -> int:
     ap.add_argument("--min-frames", type=int, default=3)
     ap.add_argument("--max-frames", type=int, default=0, help="per sequence, before stride; 0 = all")
     ap.add_argument("--sequences", nargs="*", help="only these sequence names")
+    ap.add_argument("--tracker", default="bytetrack.yaml",
+                    help="bytetrack.yaml, botsort.yaml (camera-motion compensation) or a path")
     ap.add_argument("--device", default="0")
     args = ap.parse_args()
 
@@ -54,12 +56,12 @@ def main() -> int:
         raise SystemExit(f"no sequences under {seq_dir}")
     device = int(args.device) if args.device.isdigit() else args.device
     cfg = {"kind": "yolo", "model_path": args.weights, "imgsz": args.imgsz,
-           "conf_threshold": args.conf, "device": device, "tracker": "bytetrack.yaml"}
+           "conf_threshold": args.conf, "device": device, "tracker": args.tracker}
     if args.tile:
         cfg["tile"] = args.tile
     detector = None
 
-    print(f"{args.weights}: tile {args.tile or 'none'}, conf {args.conf}, every {args.stride} frames, "
+    print(f"{args.weights} + {args.tracker}: tile {args.tile or 'none'}, conf {args.conf}, every {args.stride} frames, "
           f"person = tracked in >= {args.min_frames} evaluated frames\n")
     print("| sequence | frames | true people | counted | found | false | duplicate | count error |")
     print("|---|---|---|---|---|---|---|---|")

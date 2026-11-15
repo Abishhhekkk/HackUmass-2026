@@ -109,6 +109,7 @@ class TiledYoloTracker:
         if model is None or tracker_impl is None:
             try:
                 from ultralytics import YOLO
+                from ultralytics.trackers.bot_sort import BOTSORT
                 from ultralytics.trackers.byte_tracker import BYTETracker
                 from ultralytics.utils import YAML, IterableSimpleNamespace
                 from ultralytics.utils.checks import check_yaml
@@ -119,9 +120,16 @@ class TiledYoloTracker:
                 model = YOLO(model_path, task="detect")
             if tracker_impl is None:
                 cfg = IterableSimpleNamespace(**YAML.load(check_yaml(tracker)))
-                if cfg.tracker_type != "bytetrack":
-                    raise ValueError("tiled detection supports tracker_type: bytetrack only")
-                tracker_impl = BYTETracker(args=cfg, frame_rate=frame_rate)
+                if cfg.tracker_type == "bytetrack":
+                    tracker_impl = BYTETracker(args=cfg, frame_rate=frame_rate)
+                elif cfg.tracker_type == "botsort":
+                    if getattr(cfg, "with_reid", False):
+                        raise ValueError("tiled detection: set with_reid: False in the BoT-SORT config")
+                    # BoT-SORT = ByteTrack + camera-motion compensation (gmc_method), which keeps
+                    # small people tracked while the drone moves.
+                    tracker_impl = BOTSORT(args=cfg, frame_rate=frame_rate)
+                else:
+                    raise ValueError(f"unsupported tracker_type {cfg.tracker_type!r}")
         self.model, self._tracker = model, tracker_impl
 
     def _predict(self, crop):

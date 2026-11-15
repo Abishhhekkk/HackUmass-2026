@@ -36,7 +36,7 @@ detector:
   # (docs/detector-eval.md: 5% recall at 640/0.35).
   conf_threshold: 0.10
   device: 0
-  tracker: bytetrack.yaml
+  tracker: botsort.yaml   # ByteTrack + camera-motion compensation: keeps small people tracked while the drone moves (docs/detector-eval.md)
   # Tiled detection for small, distant people: overlapping 320 px crops, each run through the
   # same 640 engine (2x enlargement), plus one full-frame pass for near/large people.
   # VisDrone recall (stock weights): tile 320 47%, tile 640 35%, untiled 640 5%. Measured on the Orin Nano Super (JetPack 7.2.1, MAXN, yolov8n FP16 engine, 1920x1080):

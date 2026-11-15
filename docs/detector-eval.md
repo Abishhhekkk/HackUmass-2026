@@ -117,3 +117,23 @@ video with per-person IDs (VisDrone-MOT format) and reports, per sequence: true 
 counted people (tracked in >= 3 evaluated frames), found, false tracks, duplicate tracks
 and the count error. Scoring is in image space; the pipeline's ground-position merge
 (`merge_radius_m`) can only lower its count further.
+
+### Tracker: camera-motion compensation (measured)
+
+At a realistic speed (~8 m/s at 50 m, 1080p, processing every 3rd frame) a person 8-10 px wide
+moves ~20 px between processed frames, so ByteTrack's box-overlap matching loses them and new
+tracks are never confirmed. BoT-SORT (`tracker: botsort.yaml`, Ultralytics' ByteTrack plus
+sparse-optical-flow camera-motion compensation, ReID off) fixes this.
+
+Fine-tuned model, 640 px tiles, conf 0.10, every 3rd frame, `eval_counting.py` on 3 panned
+VisDrone-DET val images (`scripts/make_pan_sequences.py`, 492 labelled people, 24 frames each;
+CPU run in development, not on the Jetson):
+
+| tracker | counted | real people found | false tracks | duplicates |
+|---|---|---|---|---|
+| ByteTrack | 103 | 6 (1%) | 97 | 0 |
+| BoT-SORT (camera-motion compensation) | 406 | 305 (62%) | 100 | 1 |
+
+Limits: panning a still image has no moving people, occlusion or blur; the three images are
+the densest in the set (~160 people each). The optical-flow cost on the Jetson is not measured
+yet (`eval_counting.py` prints the total time).

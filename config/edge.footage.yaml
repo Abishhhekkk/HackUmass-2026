@@ -40,7 +40,7 @@ detector:
   imgsz: 640              # must equal the engine's export size
   conf_threshold: 0.10    # ByteTrack's low threshold (see edge.jetson.yaml)
   device: 0
-  tracker: bytetrack.yaml
+  tracker: botsort.yaml   # ByteTrack + camera-motion compensation: keeps small people tracked while the drone moves (docs/detector-eval.md)
   # Tiled detection for small people (docs/detector-eval.md). Measured on the Orin Nano Super (JetPack 7.2.1, MAXN, yolov8n FP16 engine, 1920x1080):
   # whole frame 18 ms (55 fps), tile 640 114 ms (8.8 fps), tile 480 227 ms (4.4 fps),
   # tile 320 454 ms (2.2 fps). scripts/bench_detector.py re-measures.
