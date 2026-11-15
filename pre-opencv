@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+"""Jetson: run fake person detections over an input video file.
+
+Usage (on the Jetson):
+    python3 fake_video_inference.py --video input.mp4 --output detections.jsonl
+    python3 fake_video_inference.py --video input.mkv --codec h265 --annotate-out preview.mp4
+    python3 fake_video_inference.py --video input.mp4 --decoder cpu     # force software decode
+
+Decoding uses the Jetson hardware decoder (nvv4l2decoder) through GStreamer when OpenCV was
+built with GStreamer (the JetPack OpenCV is). With --decoder auto it falls back to normal
+cv2.VideoCapture if the hardware pipeline will not open. Runs headless: no windows.
+
+No model, camera, or telemetry is used, so geolocation is skipped (target=null with a
+reason). Detections drift smoothly so track-continuity logic can be tested.
+
+To use the real detector later, replace FakeDetector with anything callable as
+detector(frame) -> list of objects with .bbox_xyxy, .confidence, .track_id.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import random
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import TextIO
+
+import cv2
+
+DEMUX = {".mp4": "qtdemux", ".mov": "qtdemux", ".m4v": "qtdemux", ".mkv": "matroskademux",
+         ".webm": "matroskademux", ".avi": "avidemux", ".ts": "tsdemux"}
+PARSE = {"h264": "h264parse", "h265": "h265parse"}
+ENCODE = {"h264": "nvv4l2h264enc", "h265": "nvv4l2h265enc"}
+
+
+@dataclass
+class VideoFrame:
+    index: int
+    t: float          # seconds since epoch (start time + video time)
+    width: int
+    height: int
+    image: object     # numpy BGR array
+
+
+@dataclass
+class FakeDetection:
+    bbox_xyxy: tuple
+    confidence: float
+    track_id: int
+
+
+class FakeDetector:
+    """Fake people with fixed size and a smooth sinusoidal drift per frame."""
+
+    def __init__(self, people: int = 2, seed: int = 7, confidence: float = 0.90):
+        if people < 0:
+            raise ValueError("people must be zero or greater")
+        if not 0 < confidence < 1:
+            raise ValueError("confidence must be between 0 and 1")
+        self.confidence = confidence
+        rng = random.Random(seed)
+        self.params = [
+            {
+                "w": rng.uniform(0.035, 0.07), "h": rng.uniform(0.16, 0.30),
+                "cx": rng.uniform(0.15, 0.85), "cy": rng.uniform(0.25, 0.75),
+                "ax": rng.uniform(0.03, 0.10), "ay": rng.uniform(0.02, 0.06),
+                "fx": rng.uniform(0.005, 0.02), "fy": rng.uniform(0.005, 0.02),
+                "px": rng.uniform(0, math.tau), "py": rng.uniform(0, math.tau),
+                "cphase": rng.uniform(0, math.tau),
+            }
+            for _ in range(people)
+        ]
+
+    def __call__(self, frame: VideoFrame) -> list[FakeDetection]:
+        W, H = frame.width, frame.height
+        if W <= 0 or H <= 0:
+            return []
+        out = []
+        for i, p in enumerate(self.params):
+            bw = max(12.0, W * p["w"])
+            bh = max(24.0, H * p["h"])
+            cx = W * (p["cx"] + p["ax"] * math.sin(p["fx"] * frame.index + p["px"]))
+            cy = H * (p["cy"] + p["ay"] * math.sin(p["fy"] * frame.index + p["py"]))
+            x1 = min(max(0.0, cx - bw / 2), W - bw)
+            y1 = min(max(0.0, cy - bh / 2), H - bh)
+            conf = self.confidence + 0.05 * math.sin(0.1 * frame.index + p["cphase"])
+            out.append(FakeDetection((x1, y1, x1 + bw, y1 + bh),
+                                     min(0.999, max(0.001, conf)), i + 1))
+        return out
+
+
+def parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--video", type=Path, required=True, help="Input video file")
+    ap.add_argument("--output", default="-", help="JSONL output path, or '-' for stdout")
+    ap.add_argument("--annotate-out", type=Path, help="Optional output video with boxes drawn")
+    ap.add_argument("--decoder", choices=("auto", "gst", "cpu"), default="auto")
+    ap.add_argument("--codec", choices=("h264", "h265"), default="h264",
+                    help="Video codec, used for the GStreamer hardware pipelines")
+    ap.add_argument("--fps", type=float, default=0.0, help="Override fps if the file reports 0")
+    ap.add_argument("--realtime", action="store_true", help="Pace processing to the video fps")
+    ap.add_argument("--people", type=int, default=2)
+    ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--confidence", type=float, default=0.90)
+    ap.add_argument("--projection-point", choices=("foot", "center"), default="foot")
+    ap.add_argument("--stride", type=int, default=1, help="Process every Nth frame")
+    ap.add_argument("--max-frames", type=int, default=0, help="Stop after N frames (0 = all)")
+    return ap.parse_args()
+
+
+def gst_decode_pipeline(path: Path, codec: str) -> str:
+    demux = DEMUX.get(path.suffix.lower())
+    if demux is None:
+        raise ValueError(f"No GStreamer demuxer known for '{path.suffix}'; use --decoder cpu")
+    decoder = "nvv4l2decoder"
+    return (f'filesrc location="{path}" ! {demux} ! {PARSE[codec]} ! {decoder} ! '
+            "nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! "
+            "appsink drop=false sync=false max-buffers=4")
+
+
+def gst_encode_pipeline(path: Path, codec: str, fps: float, w: int, h: int) -> str:
+    mux = "matroskamux" if path.suffix.lower() == ".mkv" else "qtmux"
+    return (f"appsrc ! video/x-raw,format=BGR,width={w},height={h},framerate={int(round(fps))}/1 ! "
+            f"videoconvert ! video/x-raw,format=I420 ! nvvidconv ! video/x-raw(memory:NVMM) ! "
+            f'{ENCODE[codec]} ! {PARSE[codec]} ! {mux} ! filesink location="{path}"')
+
+
+def has_gstreamer() -> bool:
+    for line in cv2.getBuildInformation().splitlines():
+        if line.strip().startswith("GStreamer:"):
+            return "YES" in line
+    return False
+
+
+def open_capture(path: Path, decoder: str, codec: str):
+    """Return (capture, first_frame, backend_name). Raises SystemExit if nothing works."""
+    attempts = []
+    if decoder in ("auto", "gst"):
+        if has_gstreamer():
+            try:
+                attempts.append(("gst-nvdec", gst_decode_pipeline(path, codec), cv2.CAP_GSTREAMER))
+            except ValueError as e:
+                if decoder == "gst":
+                    raise SystemExit(str(e))
+        elif decoder == "gst":
+            raise SystemExit("This OpenCV build has no GStreamer support; use --decoder cpu")
+    if decoder in ("auto", "cpu"):
+        attempts.append(("cpu", str(path), cv2.CAP_ANY))
+
+    for name, source, api in attempts:
+        cap = cv2.VideoCapture(source, api)
+        if cap.isOpened():
+            ok, first = cap.read()
+            if ok:
+                return cap, first, name
+        cap.release()
+        print(f"Decoder '{name}' failed to open/read the video.", file=sys.stderr)
+    raise SystemExit(f"Could not decode {path}. Check the file, --codec, and --decoder.")
+
+
+def open_writer(path: Path, decoder_name: str, codec: str, fps: float, w: int, h: int):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if decoder_name.startswith("gst"):
+        wr = cv2.VideoWriter(gst_encode_pipeline(path, codec, fps, w, h),
+                             cv2.CAP_GSTREAMER, 0, fps, (w, h), True)
+        if wr.isOpened():
+            return wr
+        print("Hardware encoder unavailable, using CPU mp4v encoder.", file=sys.stderr)
+    return cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+
+
+def open_output(path: str) -> tuple[TextIO, bool]:
+    if path == "-":
+        return sys.stdout, False
+    p = Path(path).expanduser()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p.open("w", encoding="utf-8", buffering=1), True
+
+
+def main() -> int:
+    args = parse_args()
+    if args.stride < 1:
+        raise SystemExit("--stride must be at least 1")
+    if not args.video.is_file():
+        raise SystemExit(f"Video not found: {args.video}")
+
+    cap, first, backend = open_capture(args.video, args.decoder, args.codec)
+    fps = args.fps or cap.get(cv2.CAP_PROP_FPS) or 30.0
+    height, width = first.shape[:2]
+    print(f"Decoding with {backend}: {width}x{height} @ {fps:.2f} fps", file=sys.stderr)
+
+    start = datetime.now(timezone.utc)
+    detector = FakeDetector(args.people, args.seed, args.confidence)
+    writer = (open_writer(args.annotate_out, backend, args.codec, fps / args.stride, width, height)
+              if args.annotate_out else None)
+    out, close_out = open_output(args.output)
+
+    index = processed = records = 0
+    image, have = first, True
+    t0 = time.monotonic()
+    try:
+        while have:
+            if index % args.stride == 0:
+                video_t = index / fps  # deterministic, independent of wall clock
+                if args.realtime:
+                    delay = video_t - (time.monotonic() - t0)
+                    if delay > 0:
+                        time.sleep(delay)
+                ts = start + timedelta(seconds=video_t)
+                frame = VideoFrame(index, ts.timestamp(), image.shape[1], image.shape[0], image)
+                for det in detector(frame):
+                    x1, y1, x2, y2 = det.bbox_xyxy
+                    px = (x1 + x2) / 2
+                    py = y2 if args.projection_point == "foot" else (y1 + y2) / 2
+                    out.write(json.dumps({
+                        "timestamp": ts.isoformat(timespec="milliseconds"),
+                        "video_time_s": round(video_t, 3),
+                        "frame": index,
+                        "track_id": det.track_id,
+                        "confidence": round(det.confidence, 4),
+                        "bbox_xyxy": [round(v, 1) for v in det.bbox_xyxy],
+                        "pixel": [round(px, 1), round(py, 1)],
+                        "target": None,
+                        "reason": "no_telemetry_video_replay",
+                    }) + "\n")
+                    records += 1
+                    if writer is not None:
+                        cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+                        cv2.putText(image, f"person {det.track_id} {det.confidence:.2f}",
+                                    (int(x1), max(15, int(y1) - 5)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                if writer is not None:
+                    writer.write(image)
+                processed += 1
+                if args.max_frames and processed >= args.max_frames:
+                    break
+            index += 1
+            have, image = cap.read()
+    finally:
+        cap.release()
+        if writer is not None:
+            writer.release()
+        if close_out:
+            out.close()
+
+    elapsed = time.monotonic() - t0
+    print(f"Processed {processed} frames, wrote {records} records in {elapsed:.1f}s "
+          f"({processed / max(elapsed, 1e-9):.1f} fps).", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
