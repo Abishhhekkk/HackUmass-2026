@@ -3,8 +3,7 @@
     uvicorn rescue_api.app:app --host 0.0.0.0 --port 8000      (from server/)
 
 Env: INGEST_API_KEY, DATABASE_URL (sqlite:///... or postgresql://...), SNAPSHOT_DIR,
-     GEMINI_API_KEY, GEMINI_MODEL, WEB_DIR, MAX_UPLOAD_BYTES,
-     RESCUE_PAYLOAD_KEY (base64 32 bytes; when set, uploads MUST be compressed + encrypted)
+     GEMINI_API_KEY, GEMINI_MODEL, WEB_DIR, MAX_UPLOAD_BYTES
 """
 from __future__ import annotations
 
@@ -27,7 +26,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .storage import Storage
-from .wire import WireError, is_sealed, load_key, open_sealed
 
 REPO = Path(__file__).resolve().parents[2]
 log = logging.getLogger(__name__)
@@ -123,7 +121,6 @@ def create_app(storage: Storage | None = None) -> FastAPI:
     app.state.store = store
     api_key = os.environ.get("INGEST_API_KEY")
     max_bytes = int(os.environ.get("MAX_UPLOAD_BYTES", 10 * 1024 * 1024))
-    payload_key = load_key(os.environ.get("RESCUE_PAYLOAD_KEY"))  # malformed key fails at startup
     report_jobs: set[tuple[str, int]] = set()
     report_jobs_lock = threading.Lock()
 
@@ -141,20 +138,6 @@ def create_app(storage: Storage | None = None) -> FastAPI:
         if api_key and not (x_api_key and hmac.compare_digest(x_api_key, api_key)):
             raise HTTPException(401, "bad or missing X-API-Key")
 
-    def open_part(name: str, blob: bytes) -> bytes:
-        """Undo the Jetson's compress + encrypt. A part that fails to open is rejected with 422,
-        which the uploader treats like a cut-short transfer and retries."""
-        if payload_key is None:
-            if is_sealed(blob):
-                raise HTTPException(422, f"{name} is encrypted but the server has no RESCUE_PAYLOAD_KEY")
-            return blob
-        if not is_sealed(blob):
-            raise HTTPException(422, f"{name} must be encrypted: this server requires RESCUE_PAYLOAD_KEY uploads")
-        try:
-            return open_sealed(blob, payload_key, name, max_out=max_bytes)
-        except WireError as e:
-            raise HTTPException(422, f"could not open {name}: {e}")
-
     @app.get("/api/v1/health")
     def health():
         return {"ok": True, "db": "postgres" if store.pg else "sqlite"}
@@ -169,7 +152,7 @@ def create_app(storage: Storage | None = None) -> FastAPI:
         manifest: UploadFile = File(...),
         files: list[UploadFile] = File(default=[]),
     ):
-        raw = open_part("manifest.json", await manifest.read())
+        raw = await manifest.read()
         try:
             m = Manifest.model_validate_json(raw)
         except ValidationError as e:
@@ -181,7 +164,7 @@ def create_app(storage: Storage | None = None) -> FastAPI:
             total += len(data)
             if total > max_bytes:
                 raise HTTPException(413, "snapshot too large")
-            got[f.filename] = open_part(f.filename, data)  # the size cap above counts wire bytes
+            got[f.filename] = data
         expected = {fe.name: fe for fe in m.files}
         if set(expected) != set(got) or not set(got) <= ALLOWED_FILES:
             raise HTTPException(422, f"file set mismatch: expected {sorted(expected)}, got {sorted(got)}")

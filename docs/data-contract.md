@@ -84,25 +84,6 @@ included in each snapshot's file checksums and content hash.
 | `409` same version, different content | edge storage was reset mid-mission | needs a human; start a new mission ID |
 | `401`, `413` | bad key / too big (default 10 MB) | fix config |
 
-### Optional payload encryption (`RESCUE_PAYLOAD_KEY`)
-
-When the same base64 32-byte key is set on the Jetson and the cloud API, each multipart part
-(the manifest and every file) is sent as **zstd-compressed, then AES-256-GCM encrypted**
-(`edge/rescue_edge/wire.py`, mirrored in `server/rescue_api/wire.py`):
-
-```
-"RSW1" | codec (1 = zstd, 2 = zlib fallback) | nonce (12 B) | ciphertext + tag (16 B)
-```
-
-* Multipart file names and the `sha256`/`bytes` values in the manifest are unchanged and still
-  describe the **plaintext** files. The server opens each part first, then validates exactly as above.
-* The header and file name are authenticated, so a part cannot be re-labelled; a wrong key, edited
-  bytes or a truncated transfer all fail to open and return `422` (the Jetson retries).
-* If the server has a key, plaintext uploads are rejected with `422`. If the server has no key and
-  receives a sealed part, it also returns `422`.
-* The cloud stores and serves the decrypted files; this protects the upload, not data at rest.
-  Keep HTTPS in front of the API as well: the `X-API-Key` header is not covered by this scheme.
-
 ## ESP32 → Jetson telemetry line
 
 ```json

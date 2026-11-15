@@ -1,6 +1,4 @@
-import base64
 import json
-import os
 import sys
 import threading
 import time
@@ -19,7 +17,6 @@ from rescue_edge.aggregate import Aggregator  # noqa: E402
 from rescue_edge.geolocate import offset_to_latlon  # noqa: E402
 from rescue_edge.snapshot import SnapshotWriter, snapshot_dir  # noqa: E402
 from rescue_edge.uploader import Uploader  # noqa: E402
-from rescue_edge.wire import seal  # noqa: E402
 
 LAT, LON = 42.3893, -72.5283
 
@@ -52,7 +49,6 @@ def files_for(root, version, corrupt=False, mission_id="m1"):
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("INGEST_API_KEY", "secret")
-    monkeypatch.delenv("RESCUE_PAYLOAD_KEY", raising=False)  # plaintext mode unless a test opts in
     monkeypatch.setenv("GEMINI_API_KEY", "")
     monkeypatch.setenv("GOOGLE_API_KEY", "")
     store = Storage(f"sqlite:///{tmp_path}/cloud.db", tmp_path / "cloud")
@@ -256,99 +252,9 @@ def test_ai_status_and_question_fallback(env):
     assert client.post("/api/v1/missions/m1/ask", json={"question": "x" * 1001}).status_code == 422
 
 
-@pytest.fixture
-def enc_env(tmp_path, monkeypatch):
-    """Cloud API that requires compressed + encrypted uploads (RESCUE_PAYLOAD_KEY set)."""
-    key = os.urandom(32)
-    monkeypatch.setenv("INGEST_API_KEY", "secret")
-    monkeypatch.setenv("RESCUE_PAYLOAD_KEY", base64.b64encode(key).decode())
-    monkeypatch.setenv("GEMINI_API_KEY", "")
-    monkeypatch.setenv("GOOGLE_API_KEY", "")
-    store = Storage(f"sqlite:///{tmp_path}/cloud.db", tmp_path / "cloud")
-    client = TestClient(create_app(store))
-    edge_root = tmp_path / "edge"
-    make_snapshots(edge_root)
-    return client, edge_root, store, key
-
-
-def sealed_files_for(root, version, key, tamper_sightings=False):
-    out = []
-    for field, (name, data, *rest) in files_for(root, version):
-        blob = seal(data, key, name)
-        if tamper_sightings and name == "sightings.csv":
-            blob = blob[:-1]
-        out.append((field, (name, blob, *rest)))
-    return out
-
-
-def test_encrypted_upload_is_opened_verified_and_stored_as_plaintext(enc_env):
-    client, root, store, key = enc_env
-    r = client.post("/api/v1/snapshots", files=sealed_files_for(root, 2, key), headers=H)
-    assert r.status_code == 201 and r.json()["status"] == "accepted"
-    stored = store.snapshot_dir / "m1" / "v000002"
-    plain = snapshot_dir(root, "m1", 2)
-    for name in ("sightings.csv", "heatmap.geojson", "report.md", "telemetry.json", "manifest.json"):
-        assert (stored / name).read_bytes() == (plain / name).read_bytes()
-    assert client.get("/api/v1/missions/m1/latest").json()["manifest"]["summary"]["estimated_people"] == 3
-    again = client.post("/api/v1/snapshots", files=sealed_files_for(root, 2, key), headers=H)
-    assert again.json()["status"] == "duplicate"  # fresh nonces, same content hash
-
-
-def test_server_with_key_rejects_plaintext_tampered_and_wrong_key(enc_env):
-    client, root, _, key = enc_env
-    r = client.post("/api/v1/snapshots", files=files_for(root, 1), headers=H)
-    assert r.status_code == 422 and "must be encrypted" in r.text
-    r = client.post("/api/v1/snapshots", files=sealed_files_for(root, 1, key, tamper_sightings=True), headers=H)
-    assert r.status_code == 422 and "could not open sightings.csv" in r.text
-    r = client.post("/api/v1/snapshots", files=sealed_files_for(root, 1, os.urandom(32)), headers=H)
-    assert r.status_code == 422
-    assert client.get("/api/v1/missions/m1/latest").status_code == 404  # nothing was stored
-
-
-def test_sealed_upload_to_server_without_key_is_rejected(env):
-    client, root, _ = env
-    r = client.post("/api/v1/snapshots", files=sealed_files_for(root, 1, os.urandom(32)), headers=H)
-    assert r.status_code == 422 and "no RESCUE_PAYLOAD_KEY" in r.text
-
-
-def test_encrypted_decompression_cap_is_enforced(enc_env, monkeypatch, tmp_path):
-    _, root, _, key = enc_env
-    # 20 kB comfortably fits the sealed manifest and small files; only the 1 MB report exceeds it
-    monkeypatch.setenv("MAX_UPLOAD_BYTES", "20000")
-    small = TestClient(create_app(Storage(f"sqlite:///{tmp_path}/small.db", tmp_path / "small-cloud")))
-    files = files_for(root, 1)
-    files = [(f, (n, seal(b"A" * 1_000_000, key, n), *rest)) if n == "report.md" else (f, (n, seal(b, key, n), *rest))
-             for f, (n, b, *rest) in files]
-    r = small.post("/api/v1/snapshots", files=files, headers=H)
-    assert r.status_code == 422 and "size limit" in r.text
-
-
-def test_real_http_encrypted_uploader(tmp_path, monkeypatch):
-    key = os.urandom(32)
-    monkeypatch.setenv("INGEST_API_KEY", "secret")
-    monkeypatch.setenv("RESCUE_PAYLOAD_KEY", base64.b64encode(key).decode())
-    store = Storage(f"sqlite:///{tmp_path}/cloud.db", tmp_path / "cloud")
-    server = uvicorn.Server(uvicorn.Config(create_app(store), host="127.0.0.1", port=8766, log_level="error"))
-    threading.Thread(target=server.run, daemon=True).start()
-    while not server.started:
-        time.sleep(0.05)
-    try:
-        edge = tmp_path / "edge"
-        make_snapshots(edge, (1, 2))
-        up = Uploader(edge, "m1", "http://127.0.0.1:8766", api_key="secret", payload_key=key)
-        assert up.upload_once(2)["status"] == "accepted"
-        assert [m["latest_version"] for m in store.missions()] == [2]
-        plaintext_up = Uploader(edge, "m1", "http://127.0.0.1:8766", api_key="secret")
-        with pytest.raises(RuntimeError, match="HTTP 422"):  # server insists on encryption
-            plaintext_up.upload_once(2)
-    finally:
-        server.should_exit = True
-
-
 def test_uploader_sends_latest_after_outage(tmp_path, monkeypatch):
     """Real HTTP: outage -> versions pile up -> link returns -> only newest is sent, once."""
     monkeypatch.setenv("INGEST_API_KEY", "secret")
-    monkeypatch.delenv("RESCUE_PAYLOAD_KEY", raising=False)
     store = Storage(f"sqlite:///{tmp_path}/cloud.db", tmp_path / "cloud")
     server = uvicorn.Server(uvicorn.Config(create_app(store), host="127.0.0.1", port=8765, log_level="error"))
     threading.Thread(target=server.run, daemon=True).start()

@@ -54,7 +54,6 @@ uploader:
   enabled: true
   server_url: https://YOUR-VULTR-HOST
   api_key_env: INGEST_API_KEY
-  payload_key_env: RESCUE_PAYLOAD_KEY   # base64 32-byte key => compress + encrypt uploads
   offline_flag_file: data/edge/OFFLINE
 
 local_server:
