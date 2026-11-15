@@ -569,3 +569,22 @@ def test_edge_flight_path_route_matches_cloud_shape(tmp_path):
     fc = client.get("/api/v1/missions/m1/flight-path").json()
     assert fc["properties"]["samples"] == 4 and fc["properties"]["gap_samples"] == 1
     assert [len(f["geometry"]["coordinates"]) for f in fc["features"]] == [2]  # 1-point tail dropped
+
+
+def test_detector_model_path_is_relative_to_repo_root(tmp_path, monkeypatch):
+    """Regression: models/yolov8n.engine failed when the pipeline was started from edge/."""
+    import rescue_edge.main as mainmod
+
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "my.engine").write_bytes(b"x")
+    seen = []
+    monkeypatch.setattr(mainmod, "build_detector", lambda d: seen.append(d["model_path"]) or (lambda f: []))
+    base_cfg = {"mission_id": "m", "storage_root": str(tmp_path / "snap"),
+                "source": {"kind": "replay", "path": "unused"},
+                "telemetry": {"kind": "replay", "path": str(tmp_path / "t.csv")},
+                "camera": {"width": 10, "height": 10, "hfov_deg": 60}}
+    (tmp_path / "t.csv").write_text("t,lat,lon,alt_agl,hdg\n")
+    monkeypatch.chdir(tmp_path / "models")  # started from some other folder
+    mainmod.Pipeline({**base_cfg, "detector": {"kind": "yolo", "model_path": "models/my.engine"}}, tmp_path)
+    mainmod.Pipeline({**base_cfg, "detector": {"kind": "yolo", "model_path": "yolov8n.pt"}}, tmp_path)
+    assert seen == [str(tmp_path / "models" / "my.engine"), "yolov8n.pt"]

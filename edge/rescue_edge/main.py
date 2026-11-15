@@ -83,7 +83,7 @@ class Pipeline:
 
         self.camera = CameraModel.from_config(cfg["camera"])
         self.error_model = ErrorModel(**cfg.get("error_model", {}))
-        self.detector = build_detector(cfg["detector"])
+        self.detector = build_detector(self._detector_cfg(cfg["detector"]))
         a = cfg.get("aggregate", {})
         self.agg = Aggregator(min_frames=a.get("min_frames", 3), merge_radius_m=a.get("merge_radius_m", 4.0),
                               cell_size_m=a.get("cell_size_m", 10.0),
@@ -106,6 +106,16 @@ class Pipeline:
         self.finished = False
         self.last_frame_t: float | None = None
         self._warned_resolution = False
+
+    def _detector_cfg(self, dcfg: dict) -> dict:
+        """model_path is relative to the repo root like every other path in the config (so it
+        works whichever folder the pipeline is started from). A bare name that does not exist
+        there, e.g. "yolov8n.pt", is left as is for Ultralytics to find or download."""
+        dcfg = dict(dcfg)
+        mp = dcfg.get("model_path")
+        if mp and not Path(mp).is_absolute() and self._path(mp).exists():
+            dcfg["model_path"] = str(self._path(mp))
+        return dcfg
 
     def _path(self, p: str) -> Path:
         p = Path(p)
