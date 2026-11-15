@@ -58,6 +58,9 @@ It uploads a small `check-…` mission with the Jetson's uploader code, reads it
 API and counts the rows in Tiger Data (key and `DATABASE_URL` come from `.env`). Expect
 `ALL CHECKS PASSED`, including "drone_telemetry is a TimescaleDB hypertable".
 
+Verified 2026-11-15 against a real Tiger Data service (Postgres 18.6, TimescaleDB installed,
+PostGIS enabled by the API at start): 12/12 checks passed, including the hypertable.
+
 ### 5. Public address (window 3, keep open)
 ```powershell
 winget install --id Cloudflare.cloudflared
