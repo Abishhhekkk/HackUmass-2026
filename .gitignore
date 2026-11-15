@@ -13,3 +13,5 @@ models/*
 .venv/
 node_modules/
 /web/dist/
+datasets/
+runs/
