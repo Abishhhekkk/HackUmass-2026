@@ -21,6 +21,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "web" / "public" / "demo"
+# Asked once at export time through the cloud API (Gemini + mission tools); the saved answers
+# let the static site answer these questions. Keep in step with QUESTIONS in web/src/Home.jsx.
+QUESTIONS = [
+    "Where is the densest cluster of sightings?",
+    "Which sightings have the largest position error?",
+    "Summarise this mission for the incident commander.",
+]
 FILES = ["sightings.csv", "heatmap.geojson", "report.md", "telemetry.json", "manifest.json", "flight_path.csv"]
 
 
@@ -30,10 +37,19 @@ def get(url: str) -> bytes:
         return r.read()
 
 
+def post_json(url: str, body: dict) -> dict:
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json",
+                                          "ngrok-skip-browser-warning": "1"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return json.loads(r.read())
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--api", default="http://127.0.0.1:8000/api/v1")
     ap.add_argument("--mission", help="mission id (default: the newest)")
+    ap.add_argument("--no-answers", action="store_true", help="skip asking the suggested questions")
     args = ap.parse_args()
     api = args.api.rstrip("/")
 
@@ -68,6 +84,21 @@ def main() -> int:
         (OUT / "ai-report.json").write_bytes(get(f"{api}/missions/{q}/ai-report"))
     except Exception:
         print("  (no AI report: the service is not the cloud API, or none was written)")
+    answers = []
+    if status.get("role") == "cloud" and not args.no_answers:
+        for question in QUESTIONS:
+            print(f"  asking: {question}", flush=True)
+            try:
+                r = post_json(f"{api}/missions/{q}/ask", {"question": question})
+            except Exception as e:
+                print(f"    no answer ({e})")
+                continue
+            answers.append({"question": question, "answer": r.get("answer", ""),
+                            "generated_by": r.get("generated_by"), "tool_calls": r.get("tool_calls", [])})
+            print(f"    answered by {r.get('generated_by')}")
+        (OUT / "answers.json").write_text(json.dumps(answers))
+    elif not args.no_answers:
+        print("  (questions not saved: answers come from the cloud API, use the laptop's address)")
     for name in FILES:
         try:
             (OUT / "files" / name).write_bytes(get(f"{api}/missions/{q}/files/{name}?version={version}"))

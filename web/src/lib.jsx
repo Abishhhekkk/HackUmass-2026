@@ -17,6 +17,7 @@ function demoUrl(path) {
   const p = path.split("?")[0];
   if (p === "/status") return `${DEMO}/status.json`;
   if (p === "/missions") return `${DEMO}/missions.json`;
+  if (p === "/answers") return `${DEMO}/answers.json`;
   let m = p.match(/^\/missions\/[^/]+\/(latest|ai-report|flight-path)$/);
   if (m) return `${DEMO}/${m[1]}.json`;
   m = p.match(/^\/missions\/[^/]+\/files\/([\w.-]+)$/);
@@ -155,6 +156,7 @@ export function useMission() {
   const [sightings, setSightings] = useState(null);
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [savedAnswers, setSavedAnswers] = useState([]); // static copy: answers saved at export
   const pinned = useRef(false); // the user picked a mission; don't follow the newest one
 
   const refresh = useCallback(async () => {
@@ -263,6 +265,13 @@ export function useMission() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snapshotKey, base]);
 
+  useEffect(() => {
+    if (base !== DEMO) return;
+    request(DEMO, "/answers")
+      .then((list) => setSavedAnswers(Array.isArray(list) ? list : []))
+      .catch(() => setSavedAnswers([]));
+  }, [base]);
+
   const people = useMemo(
     () => (data?.heatmap?.features || []).filter((f) => f.properties?.kind === "person"),
     [data],
@@ -328,6 +337,15 @@ export function useMission() {
       return result;
     },
     async ask(question) {
+      if (base === DEMO) {
+        const norm = (t) => t.trim().toLowerCase().replace(/[?.!\s]+$/, "");
+        const saved = savedAnswers.find((a) => norm(a.question) === norm(question));
+        if (saved) return saved;
+        throw new Error(
+          "only the suggested questions can be answered on this copy of the site; " +
+            "other questions need the cloud service.",
+        );
+      }
       return request(base, `/missions/${encodeURIComponent(missionId)}/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -356,6 +374,8 @@ export function useMission() {
     unlocated,
     flightPath,
     aiReport,
+    savedAnswers,
+    canAsk: role === "cloud" || (role === "demo" && savedAnswers.length > 0),
     files,
     actions,
   };

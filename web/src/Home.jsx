@@ -139,7 +139,7 @@ export default function Home() {
 
   async function ask(text) {
     const q = (text ?? question).trim();
-    if (!q || asking || role !== "cloud" || !m.missionId) return;
+    if (!q || asking || !m.canAsk || !m.missionId) return;
     setQuestion("");
     setMessages((list) => [...list, { who: "you", text: q }]);
     setAsking(true);
@@ -360,10 +360,10 @@ export default function Home() {
           <div className="ask-log" ref={log} aria-live="polite">
             {!messages.length && (
               <div className="ask-empty">
-                {role === "cloud" ? (
+                {m.canAsk ? (
                   <>
                     <span className="label">Try</span>
-                    {QUESTIONS.map((q) => (
+                    {(role === "demo" ? m.savedAnswers.map((a) => a.question) : QUESTIONS).map((q) => (
                       <button type="button" key={q} onClick={() => ask(q)} disabled={!m.missionId}>
                         {q}
                         <ArrowRight size={14} />
@@ -392,6 +392,15 @@ export default function Home() {
             ))}
             {asking && <div className="msg msg-vantage pending"><span className="label">Vantage</span><p>Reading the mission…</p></div>}
           </div>
+          {m.canAsk && messages.length > 0 && (
+            <div className="ask-chips">
+              {(role === "demo" ? m.savedAnswers.map((a) => a.question) : QUESTIONS).map((q) => (
+                <button type="button" key={q} onClick={() => ask(q)} disabled={asking}>
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
           <form
             className="ask-input"
             onSubmit={(e) => {
@@ -402,11 +411,17 @@ export default function Home() {
             <input
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
-              placeholder={role === "cloud" ? "Ask about this mission" : "Available on the cloud service"}
-              disabled={role !== "cloud" || asking}
+              placeholder={
+                role === "cloud"
+                  ? "Ask about this mission"
+                  : m.canAsk
+                    ? "Pick a question above"
+                    : "Available on the cloud service"
+              }
+              disabled={!m.canAsk || asking}
               aria-label="Question about the mission"
             />
-            <button type="submit" disabled={role !== "cloud" || asking || !question.trim()} aria-label="Ask">
+            <button type="submit" disabled={!m.canAsk || asking || !question.trim()} aria-label="Ask">
               <CornerDownLeft size={16} />
             </button>
           </form>
