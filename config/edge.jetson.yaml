@@ -39,10 +39,11 @@ detector:
   tracker: bytetrack.yaml
   # Tiled detection for small, distant people: overlapping 320 px crops, each run through the
   # same 640 engine (2x enlargement), plus one full-frame pass for near/large people.
-  # VisDrone recall: 47% vs 5% (docs/detector-eval.md). Cost: one engine run per tile;
-  # a 1920x1080 frame = 32 tiles + 1. Measure FPS on the Jetson; for speed try tile: 480
-  # (15 + 1 runs) or 640 (8 + 1), or remove `tile` for whole-frame detection.
-  tile: 320
+  # VisDrone recall (stock weights): tile 320 47%, tile 640 35%, untiled 640 5%. Measured on the Orin Nano Super (JetPack 7.2.1, MAXN, yolov8n FP16 engine, 1920x1080):
+  # whole frame 18 ms (55 fps), tile 640 114 ms (8.8 fps), tile 480 227 ms (4.4 fps),
+  # tile 320 454 ms (2.2 fps). scripts/bench_detector.py re-measures.
+  # 640 keeps up with the scheduler; remove `tile` for whole-frame detection.
+  tile: 640
   tile_overlap: 0.2
   tile_full_frame: true
 
@@ -54,7 +55,7 @@ aggregate:
 
 scheduler:
   search_stride: 4
-  active_stride: 1
+  active_stride: 3        # every 3rd frame while people are in view (tiles run ~8.8 fps)
   thermal_stride: 6
   hold_active_s: 3.0
   thermal_limit_c: 80

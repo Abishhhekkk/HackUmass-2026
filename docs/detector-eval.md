@@ -84,8 +84,23 @@ precision before, 61.2% after, same recall), duplicates merged. 320 px tiles on 
 CPU times are wall clock on a cloud CPU; on the Jetson multiply-out from the per-640-run
 TensorRT time you measure.
 
-Done: `config/edge.jetson.yaml` now uses tiles of 320 px and `conf_threshold: 0.10`
-(`rescue_edge/detector.py: TiledYoloTracker`, ByteTrack on the merged boxes).
+## Speed on the Jetson (measured)
+
+Orin Nano Developer Kit Super, JetPack 7.2.1, MAXN power mode, YOLOv8n TensorRT FP16 engine
+(640×640), one 1920×1080 frame, `scripts/bench_detector.py`, 2026-11-14:
+
+| Mode | Engine runs / frame | ms / frame | frames / s |
+|---|---|---|---|
+| whole frame | 1 | 18 | 55 |
+| tiles 640 px | 9 | 114 | 8.8 |
+| tiles 480 px | 16 | 227 | 4.4 |
+| tiles 320 px | 33 | 454 | 2.2 |
+
+About 14 ms per engine run. The configs use **tile 640** (keeps up with the scheduler: every 4th
+frame of a 30 fps video while searching, every 3rd while people are in view) and
+`conf_threshold: 0.10`. 320 px tiles find more people with the stock COCO weights but are too
+slow; re-check with the VisDrone-trained model (`docs/training.md`), which sees people at
+native resolution, so 640 px tiles should suit it.
 
 Next steps (YOLO stays, per the project brief):
 1. **Measure FPS on the Jetson** with the TensorRT engine (`docs/hardware.md`, step 5). If 33
