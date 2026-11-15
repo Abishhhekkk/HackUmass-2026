@@ -244,16 +244,47 @@ def load_config(path: str) -> tuple[dict, Path]:
     return cfg, p.parent.parent
 
 
+class SnapshotViewer:
+    """Stands in for a Pipeline when only serving saved snapshots (--serve-only): no camera,
+    video, telemetry, model or uploader is touched."""
+
+    def __init__(self, cfg: dict, base: Path):
+        p = Path(cfg.get("storage_root", "data/edge/snapshots"))
+        self.root = p if p.is_absolute() else base / p
+        self.mission_id = cfg.get("mission_id") or ""
+        self.uploader = None
+
+    def status(self) -> dict:
+        return {"role": "edge", "mission_id": self.mission_id, "running": False, "finished": True,
+                "frames": None, "detections": None, "scheduler": None,
+                "demo_controls_available": False, "network_demo_available": False,
+                "uploader": None, "telemetry_samples": None, "serve_only": True}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="RescueSight edge pipeline")
     ap.add_argument("--config", required=True)
     ap.add_argument("--serve", action="store_true", help="also serve the local dashboard")
+    ap.add_argument("--serve-only", action="store_true",
+                    help="only serve the dashboard for snapshots already saved (no processing)")
     ap.add_argument("--mission-id")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg, base = load_config(args.config)
     if args.mission_id:
         cfg["mission_id"] = args.mission_id
+    if args.serve_only:
+        import uvicorn
+
+        from .local_server import create_app
+
+        viewer = SnapshotViewer(cfg, base)
+        ls = cfg.get("local_server", {})
+        log.info("serving saved snapshots from %s on port %s (no processing)", viewer.root,
+                 ls.get("port", 8080))
+        uvicorn.run(create_app(viewer, base / "web"), host=ls.get("host", "0.0.0.0"),
+                    port=ls.get("port", 8080), log_level="warning")
+        return
     pipe = Pipeline(cfg, base)
     log.info("mission %s, snapshots in %s", pipe.mission_id, pipe.root)
     if not args.serve:

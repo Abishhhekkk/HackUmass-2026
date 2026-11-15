@@ -588,3 +588,16 @@ def test_detector_model_path_is_relative_to_repo_root(tmp_path, monkeypatch):
     mainmod.Pipeline({**base_cfg, "detector": {"kind": "yolo", "model_path": "models/my.engine"}}, tmp_path)
     mainmod.Pipeline({**base_cfg, "detector": {"kind": "yolo", "model_path": "yolov8n.pt"}}, tmp_path)
     assert seen == [str(tmp_path / "models" / "my.engine"), "yolov8n.pt"]
+
+
+def test_serve_only_viewer_serves_saved_snapshots(tmp_path):
+    from rescue_edge.main import SnapshotViewer
+
+    agg = Aggregator()
+    agg.note_frame(1000.0)
+    SnapshotWriter(tmp_path / "data" / "snap", "sim-crowd", "drone-sim").write_if_changed(agg.finalize())
+    viewer = SnapshotViewer({"storage_root": "data/snap", "mission_id": "sim-crowd"}, tmp_path)
+    client = TestClient(create_app(viewer, tmp_path / "web"))
+    assert client.get("/api/v1/status").json()["serve_only"] is True
+    assert [m["mission_id"] for m in client.get("/api/v1/missions").json()] == ["sim-crowd"]
+    assert client.get("/api/v1/missions/sim-crowd/latest").status_code == 200
