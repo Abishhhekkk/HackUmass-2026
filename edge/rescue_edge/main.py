@@ -44,6 +44,11 @@ class Pipeline:
         self.root = self._path(cfg.get("storage_root", "data/edge/snapshots"))
 
         tcfg = cfg["telemetry"]
+        # e.g. "SIMULATED flight path (not real GPS)" from scripts/simulate_telemetry.py; it is
+        # carried into every snapshot's telemetry.json so the data says where positions came from
+        self.telemetry_source = tcfg.get("source_label") or "edge_telemetry"
+        if tcfg.get("source_label"):
+            log.warning("telemetry source: %s", tcfg["source_label"])
         # A replayed log is loaded whole before the first frame, so it must not be capped;
         # a live serial feed keeps a bounded rolling window.
         self.telemetry = TelemetryBuffer(tcfg.get("max_gap_s", 1.0), tcfg.get("max_age_s", 2.0),
@@ -143,7 +148,7 @@ class Pipeline:
                 "schema_version": 1,
                 "available": lookup.pose is not None,
                 "observed_at": iso(self.last_frame_t),
-                "source": "edge_telemetry",
+                "source": self.telemetry_source,
                 "alignment": "TelemetryBuffer lookup at the latest processed frame timestamp",
             }
             if lookup.pose is None:

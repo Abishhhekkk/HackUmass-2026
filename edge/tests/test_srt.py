@@ -157,3 +157,64 @@ def test_srt_tool_csv_replays_identically(tmp_path):
         if a.pose:
             assert (round(a.pose.lat, 6), round(a.pose.heading_deg, 1)) == (round(b.pose.lat, 6), round(b.pose.heading_deg, 1))
     assert direct.at(direct._t[0]).reason == "heading_unknown"  # first sample: no motion yet
+
+
+def test_simulated_flight_log_and_config_run_through_pipeline(tmp_path):
+    """scripts/simulate_telemetry.py: CSV + config for a clip without a real log; positions
+    follow the made-up path, and the data is labelled as simulated."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import yaml
+
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    from rescue_edge.detector import Detection
+    from rescue_edge.main import Pipeline, load_config
+
+    repo = Path(__file__).resolve().parents[2]
+    w, h, fps, n = 640, 360, 10, 30
+    clip = tmp_path / "top down crowd.mp4"
+    writer = cv2.VideoWriter(str(clip), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+    for _ in range(n):
+        frame = np.zeros((h, w, 3), np.uint8)
+        frame[172:180, 317:323] = 255  # "person" whose feet are at the image centre
+        writer.write(frame)
+    writer.release()
+    cfg_path = tmp_path / "config" / "clip.sim.yaml"
+    csv_path = tmp_path / "tel.csv"
+    r = subprocess.run([sys.executable, str(repo / "scripts/simulate_telemetry.py"), str(clip),
+                        "--alt", "30", "--heading", "90", "--speed", "5", "--start", "2026-11-15T12:00:00Z",
+                        "--out-csv", str(csv_path), "--config-out", str(cfg_path)],
+                       capture_output=True, text=True, check=True)
+    assert "640x360" in r.stdout and "DEMO" in r.stdout
+    assert cfg_path.read_text().startswith("# GENERATED") and "SIMULATED" in cfg_path.read_text()
+
+    cfg, base = load_config(str(cfg_path))
+    assert cfg["mission_id"] == "sim-top-down-crowd" and cfg["camera"]["width"] == 640
+    rows = list(csv.DictReader(csv_path.open()))
+    start = datetime(2026, 11, 15, 12, tzinfo=timezone.utc).timestamp()
+    assert float(rows[0]["t"]) <= start - 0.9 and float(rows[-1]["t"]) >= start + n / fps + 0.9
+
+    cfg["source"]["realtime"] = False
+    cfg["storage_root"] = str(tmp_path / "snap")
+    cfg["uploader"]["enabled"] = False
+    cfg["detector"] = {"kind": "mock"}
+    cfg["scheduler"] = {"search_stride": 1}
+    pipe = Pipeline(cfg, base)
+
+    def bright_blob(frame):
+        ys, xs = np.nonzero(frame.image[..., 0] > 128)
+        return [Detection((xs.min(), ys.min(), xs.max() + 1, ys.max() + 1), 0.9, 1)] if len(xs) else []
+
+    pipe.detector = bright_blob
+    pipe.run()
+    people = pipe.agg.finalize().people
+    assert len(people) == 1
+    north, east = latlon_to_offset(42.38925, -72.52830, people[0].lat, people[0].lon)
+    assert abs(north) < 0.5 and 5.0 < east < 10.0  # under the drone flying east, median ~1.5 s in
+    snap = next((tmp_path / "snap" / "sim-top-down-crowd").glob("v*"))
+    assert json.loads((snap / "telemetry.json").read_text())["source"] == "SIMULATED flight path (not real GPS)"
+    yaml.safe_load(cfg_path.read_text())  # generated file stays valid YAML
