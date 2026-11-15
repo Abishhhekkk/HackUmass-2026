@@ -52,18 +52,25 @@ VisDrone (~1.6 GB), builds the tiled dataset, trains, evaluates stock vs fine-tu
 val at tiles 640 and 320, and logs everything to `runs/rescue/vultr_train.log`. The manual
 steps below are what it runs.
 
-## Option C: Kaggle notebook (free GPU)
+## Option C: free GPU notebook (Google Colab or Kaggle)
 
-`scripts/kaggle_train.ipynb` does everything in one notebook on Kaggle's free GPU:
-1. kaggle.com → **Create → New Notebook → File → Import Notebook**, upload
-   `scripts/kaggle_train.ipynb` (download it from GitHub first).
-2. Session options: **Accelerator: GPU T4**, **Internet: On** (phone verification needed once).
-3. **Save Version → Save & Run All (Commit)**: runs in the background, browser can close.
-4. Open the finished version → **Output**: download `person-visdrone.pt` and `eval.md`.
+`scripts/train_notebook.ipynb` does everything in one notebook: GPU check, install, VisDrone
+download, tiling, training, stock vs fine-tuned evaluation, and `person-visdrone.pt` + `eval.md`.
+It uses the platform's preinstalled CUDA PyTorch (and stops if installing Ultralytics would
+replace it).
 
-It uses Kaggle's preinstalled CUDA PyTorch (and stops if installing Ultralytics would replace
-it), keeps the 1.6 GB dataset in `/tmp`, and saves only the weights, `eval.md` and training
-plots as outputs. Quicker run: set `EPOCHS = 20`, `FRACTION = 0.5` in the first code cell.
+**Google Colab**
+1. Open https://colab.research.google.com/github/Abishhhekkk/HackUmass-2026/blob/claude/scripts/train_notebook.ipynb
+2. **Runtime → Change runtime type → T4 GPU**, then **Runtime → Run all**; allow Google Drive.
+3. Keep the tab open. Training progress and results go to **My Drive → rescuesight**, so after a
+   disconnect, **Run all** again: it re-downloads the data and resumes from the last epoch.
+4. Download `person-visdrone.pt` and `eval.md` from that Drive folder.
+
+**Kaggle**: Create → New Notebook → File → Import Notebook (upload the `.ipynb`); Session options
+**GPU T4** + **Internet On**; **Save Version → Save & Run All (Commit)** (runs in the background);
+results in the version's **Output** tab.
+
+Quicker run on either: set `EPOCHS = 20`, `FRACTION = 0.5` in the first code cell.
 
 ## Option B: your laptop
 
