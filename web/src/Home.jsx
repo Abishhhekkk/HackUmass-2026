@@ -242,7 +242,7 @@ export default function Home() {
           </h1>
           <p className="hero-lede">
             Vantage gives an ordinary drone a memory and a pair of eyes. A Jetson on board finds people
-            in the video, puts each one on the map with an honest error ring, and keeps every result on
+            in the video, puts each one on the map with an estimated search radius, and keeps every result on
             the drone until any link can carry it home.
           </p>
           <div className="hero-actions">
