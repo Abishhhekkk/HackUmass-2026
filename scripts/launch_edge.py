@@ -172,7 +172,10 @@ def main() -> None:
     require("INGEST_API_KEY", "so the cloud accepts this Jetson's uploads")
     database_url = os.environ.get("DATABASE_URL")
     fixed = os.environ.get("CLOUD_URL") if real(os.environ.get("CLOUD_URL")) else None
-    say(f"   ingest key: set   cloud address: {'CLOUD_URL from .env' if fixed else 'looked up in Tiger Data' if real(database_url) else 'none (offline only)'}")
+    say(f"   ingest key: set   cloud address: {'CLOUD_URL from .env' if fixed else 'looked up in Tiger Data' if real(database_url) else 'NONE'}")
+    if not fixed and not real(database_url):
+        say("   ! No DATABASE_URL (or CLOUD_URL) in this Jetson's .env, so it cannot find the laptop.\n"
+            "     The mission runs and saves on board only. Copy the laptop's .env here to fix it.")
 
     step("2/5  Model, clip and website")
     import yaml
@@ -236,7 +239,7 @@ def main() -> None:
                 u = st.get("uploader") or {}
                 line = (f"[STATUS] frames {st.get('frames')}  on board v{u.get('local_version')}  "
                         f"cloud v{u.get('acked_version')}  "
-                        f"{'NO LINK' if u.get('online') is False else 'link up'}"
+                        f"{'NO LINK' if u.get('online') is False else 'link up' if u.get('online') else 'waiting for first upload'}"
                         f"{'  ATTENTION: ' + u['last_error'] if u.get('needs_attention') else ''}")
                 if line != last:
                     say(line)
