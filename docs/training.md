@@ -25,18 +25,32 @@ Time is a rough guess, **not measured here** (this repo was only smoke-tested on
 ~22k tiles per epoch; 50 epochs is on the order of 1–3 hours on a data-centre GPU and
 several hours on a laptop GPU. Early stopping ends sooner if it stops improving.
 
-## Option A: Vultr cloud GPU
+## Option A: Vultr cloud GPU (one script)
 
-1. In the Vultr console create a **Cloud GPU** instance with an NVIDIA GPU (16 GB+ VRAM is
-   plenty) and an Ubuntu image. Add your SSH key. Note its IP.
-2. `ssh root@<ip>` and check the GPU: `nvidia-smi`. If it is not found, install the
-   NVIDIA driver for that image first (Vultr's GPU documentation describes it).
-3. Continue with **Steps on the GPU machine** below.
-4. Copy the result to your laptop: `scp root@<ip>:~/HackUmass-2026/runs/rescue/person-yolov8n/weights/best.pt .`
-5. **Destroy the instance** when done. A stopped instance is still billed on most clouds,
-   including Vultr; destroying it ends billing. Nothing on it is needed afterwards.
+1. **SSH key** (once, on your laptop): `ssh-keygen -t ed25519` (works in Windows PowerShell
+   too), then add the contents of `~/.ssh/id_ed25519.pub` in the Vultr console under your
+   account's SSH Keys.
+2. **Deploy** a *Cloud GPU* instance: an NVIDIA plan with at least 8 GB of GPU memory (more
+   vCPUs speed up data loading), an **Ubuntu image marked GPU-enabled / with NVIDIA drivers**
+   (Vultr's docs say these ship with the driver and CUDA), your SSH key. Note the IP.
+3. **Connect and start** (the repo is public, so no GitHub login is needed):
+   ```bash
+   ssh root@<ip>
+   git clone https://github.com/Abishhhekkk/HackUmass-2026.git && cd HackUmass-2026
+   git checkout claude          # until merged
+   tmux new -s train
+   bash scripts/vultr_train.sh  # EPOCHS=50 by default; e.g. EPOCHS=30 bash scripts/vultr_train.sh
+   ```
+   `Ctrl-b` then `d` detaches (training continues if your laptop sleeps or SSH drops);
+   `tmux attach -t train` reattaches. Re-running the script resumes where it stopped.
+4. **When it prints "5/5 done"**, run the two `scp` lines it prints **on your laptop**, look at
+   `eval.md` (stock vs fine-tuned recall), then **destroy the instance** in the console. A
+   stopped instance is still billed; destroying it ends billing.
 
-No API keys or project secrets are needed on the GPU machine.
+`scripts/vultr_train.sh` checks the GPU, installs Ultralytics 8.3.253 in a venv, downloads
+VisDrone (~1.6 GB), builds the tiled dataset, trains, evaluates stock vs fine-tuned on VisDrone
+val at tiles 640 and 320, and logs everything to `runs/rescue/vultr_train.log`. The manual
+steps below are what it runs.
 
 ## Option B: your laptop
 
