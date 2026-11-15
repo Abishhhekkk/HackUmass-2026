@@ -1,4 +1,4 @@
-// RescueSight landing page (#/story): what the system is, shown with the live mission data.
+// RescueSight landing page (home; also #/story): what the system is, shown with the live mission data.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { contours } from "d3-contour";
 import { ArrowRight, ArrowUpRight, Send } from "lucide-react";

@@ -973,8 +973,11 @@ function MissionControl() {
   );
 }
 
+// The landing page is the home page; mission control lives at #/dashboard.
+const isDashboard = () => window.location.hash.startsWith("#/dashboard");
+
 function App() {
-  const [storyPage, setStoryPage] = useState(window.location.hash === "#/story");
+  const [storyPage, setStoryPage] = useState(!isDashboard());
 
   useEffect(() => {
     document.body.classList.toggle("story-mode", storyPage);
@@ -983,7 +986,7 @@ function App() {
 
   useEffect(() => {
     function syncPage() {
-      setStoryPage(window.location.hash === "#/story");
+      setStoryPage(!isDashboard());
     }
     window.addEventListener("hashchange", syncPage);
     return () => window.removeEventListener("hashchange", syncPage);
