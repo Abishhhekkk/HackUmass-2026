@@ -4,8 +4,9 @@
 1. Reads .env (DATABASE_URL, INGEST_API_KEY; GEMINI_API_KEY optional). No fallback key.
 2. Installs Python packages and rebuilds the website only when they changed.
 3. Starts the cloud API on 127.0.0.1:8000 and checks it is using Tiger Data.
-4. Starts a Cloudflare quick tunnel, waits until the public address answers, and records it
-   in Tiger Data so the Jetson launcher finds it by itself.
+4. Starts the public address and records it in Tiger Data so the Jetson launcher finds it:
+   ngrok with your free static domain when NGROK_DOMAIN + NGROK_AUTHTOKEN are in .env (the same
+   address every time), otherwise a Cloudflare quick tunnel (a new address each start).
 5. Opens mission control, keeps both running, restarts the tunnel if it drops (and records
    the new address). Ctrl+C or close the window to stop.
 """
@@ -105,6 +106,55 @@ class Tunnel:
         return self.url
 
 
+def find_ngrok() -> str | None:
+    found = shutil.which("ngrok")
+    if found:
+        return found
+    winget = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet"
+    if winget.is_dir():
+        for c in winget.rglob("ngrok.exe"):
+            return str(c)
+    return None
+
+
+def ensure_ngrok() -> str:
+    exe = find_ngrok()
+    if exe:
+        return exe
+    if os.name == "nt" and shutil.which("winget"):
+        say("   ngrok not found: installing it with winget...")
+        subprocess.run(["winget", "install", "--id", "ngrok.ngrok", "-e",
+                        "--accept-source-agreements", "--accept-package-agreements"])
+        exe = find_ngrok()
+        if exe:
+            return exe
+    die("ngrok is not installed. Windows: winget install --id ngrok.ngrok (then run this again).")
+
+
+class NgrokTunnel(Tunnel):
+    """ngrok with the account's free static domain: the same address every time."""
+
+    def __init__(self, exe: str, database_url: str, domain: str):
+        super().__init__(exe, database_url)
+        self.domain = domain.removeprefix("https://").removeprefix("http://").strip("/")
+
+    def start(self) -> str:
+        self.url = f"https://{self.domain}"
+        # NGROK_AUTHTOKEN comes from .env (load_env put it in the environment)
+        self.proc = subprocess.Popen(
+            [self.exe, "http", "8000", f"--url={self.url}", "--log=stdout", "--log-format=logfmt"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+        threading.Thread(target=pump, args=(self.proc, "NGROK"), daemon=True).start()
+        say(f"   Permanent address: {self.url}  - waiting until it answers...")
+        if not wait_http(f"{self.url}/api/v1/health", 60):
+            if self.proc.poll() is not None:
+                die("ngrok stopped (see the [NGROK] lines): check NGROK_AUTHTOKEN and NGROK_DOMAIN in .env.")
+            say("   The address does not answer yet; recording it anyway.")
+        publish_cloud_url(self.database_url, self.url)
+        say("   Address recorded in Tiger Data (it never changes, so CLOUD_URL on the Jetson also works).")
+        return self.url
+
+
 def main() -> None:
     os.chdir(ROOT)
     say("VANTAGE - cloud side (laptop)")
@@ -150,8 +200,15 @@ def main() -> None:
         die(f"the API is using {health.get('db')}, not Tiger Data: check DATABASE_URL in .env.")
     say("   API running on http://127.0.0.1:8000 with Tiger Data")
 
-    step("4/5  Public address (Cloudflare quick tunnel)")
-    tunnel = Tunnel(ensure_cloudflared(), database_url)
+    domain = os.environ.get("NGROK_DOMAIN", "")
+    if real(domain):
+        step("4/5  Public address (ngrok, permanent)")
+        if not real(os.environ.get("NGROK_AUTHTOKEN")):
+            die("NGROK_DOMAIN is set but NGROK_AUTHTOKEN is missing in .env (ngrok dashboard > Your Authtoken).")
+        tunnel = NgrokTunnel(ensure_ngrok(), database_url, domain)
+    else:
+        step("4/5  Public address (Cloudflare quick tunnel; set NGROK_DOMAIN for a permanent one)")
+        tunnel = Tunnel(ensure_cloudflared(), database_url)
     url = tunnel.start()
 
     step("5/5  Running")
@@ -169,7 +226,7 @@ def main() -> None:
             if api.poll() is not None:
                 die("the API stopped (see the [API] lines above).")
             if tunnel.proc.poll() is not None:
-                say("\n   The tunnel stopped: starting a new one (the address will change)...")
+                say("\n   The tunnel stopped: starting it again...")
                 tunnel.start()
                 say(f"   New public address: {tunnel.url} (recorded; the Jetson follows it)")
     except KeyboardInterrupt:
