@@ -21,6 +21,7 @@ from .aggregate import Aggregator
 from .capture import CameraSource, ReplaySource, VideoFileSource, csi_pipeline
 from .detector import build_detector
 from .geolocate import CameraModel, ErrorModel, pixel_to_ground
+from .photos import PhotoWriter
 from .report import iso
 from .scheduler import AdaptiveScheduler, SchedulerConfig
 from .snapshot import SnapshotWriter
@@ -74,9 +75,28 @@ class Pipeline:
                 api_key=os.environ.get(ucfg.get("api_key_env", "INGEST_API_KEY")),
                 offline_flag_file=str(self._path(ucfg["offline_flag_file"])) if ucfg.get("offline_flag_file") else None,
                 base_backoff_s=ucfg.get("base_backoff_s", 2.0), max_backoff_s=ucfg.get("max_backoff_s", 60.0))
+        pcfg = cfg.get("photos", {})
+        self.photos = None
+        if pcfg.get("enabled"):
+            self.photos = PhotoWriter(
+                self.root, self.mission_id, quality=pcfg.get("jpeg_quality", 90),
+                queue_size=pcfg.get("queue_size", 8), max_photos=pcfg.get("max_photos", 500))
         self.running = False
         self.finished = False
         self.last_frame_t: float | None = None
+
+    def _snapshot_new_tracks(self, frame, dets, look) -> None:
+        """Photograph the frame in which each track is first reported (see photos.py).
+
+        Untracked detections (track_id None) are skipped: they could not be matched back to
+        a sightings.csv row. A track is only marked done once its photo was accepted, so a
+        full queue just means we try again on that track's next detection.
+        """
+        for d in dets:
+            if d.track_id is None:
+                continue
+            self.photos.submit(frame.image, frame.t, frame.index, f"{self.agg.pass_id}:{d.track_id}",
+                               d.confidence, d.bbox_xyxy, look.pose, look.reason)
 
     def _path(self, p: str) -> Path:
         p = Path(p)
@@ -133,6 +153,8 @@ class Pipeline:
             self.serial_reader.start()
         if self.uploader:
             self.uploader.start()
+        if self.photos:
+            self.photos.start()
         last_snap_t = None
         try:
             for frame in self._source():
@@ -141,6 +163,8 @@ class Pipeline:
                 if self.scheduler.should_process(frame.index):
                     dets = self.detector(frame)
                     look = self.telemetry.at(frame.t)
+                    if self.photos and frame.image is not None:
+                        self._snapshot_new_tracks(frame, dets, look)
                     for d in dets:
                         if look.pose is None:
                             self.agg.add(frame.t, d.track_id, d.confidence, None, None, None, look.reason)
@@ -157,6 +181,8 @@ class Pipeline:
             self.snapshot(force=True)  # final snapshot always carries the full frame counts
         finally:
             self.running, self.finished = False, True
+            if self.photos:
+                self.photos.stop()  # flush queued photos before the mission ends
             if self.serial_reader and self.serial_reader.is_alive():
                 self.serial_reader.stop()
                 self.serial_reader.join(timeout=2.0)
@@ -172,6 +198,7 @@ class Pipeline:
                 "demo_controls_available": bool(self.uploader),
                 "network_demo_available": bool(self.uploader and self.uploader.offline_flag),
                 "uploader": self.uploader.status() if self.uploader else None,
+                "photos": self.photos.status() if self.photos else None,
                 "telemetry_samples": len(self.telemetry)}
 
 

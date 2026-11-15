@@ -40,6 +40,12 @@ scheduler:
 
 snapshot_interval_s: 10   # in flight-time seconds; only written if data changed
 
+photos:
+  enabled: false          # replay mode has no pixels; turn on with a video or camera source
+  jpeg_quality: 90
+  queue_size: 8
+  max_photos: 500
+
 uploader:
   enabled: true
   server_url: http://127.0.0.1:8000

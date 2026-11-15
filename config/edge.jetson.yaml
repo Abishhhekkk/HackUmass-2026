@@ -50,6 +50,14 @@ scheduler:
 
 snapshot_interval_s: 10
 
+# One JPEG of the frame where each new track is first detected, plus photos_index.csv
+# (timestamps + drone pose) under <storage_root>/<mission_id>/photos/. Stays on the drone.
+photos:
+  enabled: true
+  jpeg_quality: 90        # 85-92 is a good size/quality trade-off; lower = smaller files
+  queue_size: 8           # photos waiting for the writer thread; skipped (and retried) if full
+  max_photos: 500         # safety cap so a busy scene cannot fill the disk
+
 uploader:
   enabled: true
   server_url: https://YOUR-VULTR-HOST
