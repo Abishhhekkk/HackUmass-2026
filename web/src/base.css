@@ -1,7 +1,5 @@
 /* Vantage — design tokens and base. One dark field-instrument theme, one signal colour.
    Orange is reserved for people (sightings) and the single primary action on a screen. */
-@import "@fontsource-variable/archivo/wdth.css";
-@import "@fontsource-variable/jetbrains-mono/index.css";
 
 :root {
   --ink-0: #0a0c0b;      /* page */
