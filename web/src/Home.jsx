@@ -8,23 +8,23 @@ import { Mark, Wordmark } from "./ui.jsx";
 // Measured results for the add-on (sources in the paragraph under the grid).
 const MEASURED = [
   {
-    label: "People found",
-    note: "recall on aerial footage",
-    big: "72.4",
-    unit: "%",
+    label: "More people found",
+    note: "than a stock detector, aerial footage",
+    big: "2×",
+    unit: "",
     bars: [
       { label: "Vantage", value: 72.4 },
-      { label: "Stock detector · 36.8%", value: 36.8 },
+      { label: "Stock detector", value: 36.8 },
     ],
   },
   {
-    label: "Tracked while the drone moves",
-    note: "camera-motion compensation",
-    big: "68",
-    unit: "%",
+    label: "More people tracked while moving",
+    note: "with camera-motion compensation",
+    big: "3.4×",
+    unit: "",
     bars: [
-      { label: "Vantage", value: 68 },
-      { label: "Without compensation · 20%", value: 20 },
+      { label: "Vantage · 1,551 people", value: 68 },
+      { label: "Without compensation · 456", value: 20 },
     ],
   },
   {
@@ -357,7 +357,7 @@ export default function Home() {
         <p className="measured-source">
           People found: 60 VisDrone validation images, 640 px tiles (these images also chose the training
           epoch, so read it as approximate). Tracking: 2,292 labelled people in moving aerial sequences,
-          on the Jetson. Link outage, real time and speed: end-to-end runs on the Jetson with uploads to
+          measured on the Jetson. Link outage, real time and speed: end-to-end runs on the Jetson with uploads to
           Tiger Data.
         </p>
       </section>
