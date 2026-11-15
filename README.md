@@ -1,4 +1,4 @@
-# RescueSight | HackUMass 2026
+# Vantage | HackUMass 2026
 
 Offline-first search-and-rescue situational awareness prototype. A Jetson Orin Nano processes
 the drone's video feed with onboard person detection, while ESP32 GPS/pose telemetry is aligned
@@ -35,9 +35,11 @@ Requirements: Python 3.10+, Node.js 20+, and npm.
    It prints the dashboard URLs and runs a simulated connectivity outage and recovery. The
    cloud API uses SQLite by default, so no database or API key is required for the local demo.
 
-Click the RescueSight wordmark in the dashboard to open the interactive project overview. The
-overview uses live mission snapshots, exposes edge-only outage and upload-integrity controls,
-and provides a mission-scoped assistant when served by the cloud API. Gemini Q&A is read-only
+The site has two pages: the home page (`/`) shows a replay of the live mission, the offline
+link with its snapshot versions, measured detector results and a mission-scoped assistant
+(cloud only); mission control (`/#/dashboard`) is the operator console: map, readings, sightings
+without a position, exports and reports. Outage and upload-integrity demo controls appear when
+the edge has an uplink configured. Gemini Q&A is read-only
 and falls back to the deterministic report when credentials or the integration are unavailable.
 
 ## Cloud: FastAPI + Tiger Data
@@ -49,7 +51,7 @@ and an end-to-end check (`scripts/check_cloud.py`): [docs/deploy.md](./docs/depl
 
 ## Recorded footage from an existing drone
 
-RescueSight adds onboard AI and offline storage to drones that have neither: a Jetson Orin
+Vantage adds onboard AI and offline storage to drones that have neither: a Jetson Orin
 Nano processes the drone's video together with the drone's own flight log (DJI `.SRT`).
 Put the video and its `.SRT` in `data/footage/`, check the log with
 `python scripts/srt_to_telemetry.py data/footage/DJI_0001.SRT --utc-offset -5`, then run

@@ -32,7 +32,7 @@ from .storage import Storage
 
 REPO = Path(__file__).resolve().parents[2]
 log = logging.getLogger(__name__)
-NOT_BUILT_HTML = """<!doctype html><meta charset="utf-8"><title>RescueSight: dashboard not built</title>
+NOT_BUILT_HTML = """<!doctype html><meta charset="utf-8"><title>Vantage: dashboard not built</title>
 <body style="font-family:system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem">
 <h1>Dashboard not built</h1>
 <p>The API is running, but <code>web/dist</code> does not exist, so there is no dashboard to serve.
@@ -139,7 +139,7 @@ def create_app(storage: Storage | None = None) -> FastAPI:
         finally:
             reports.stop()
 
-    app = FastAPI(title="RescueSight cloud API", lifespan=lifespan)
+    app = FastAPI(title="Vantage cloud API", lifespan=lifespan)
     app.state.store = store
     app.state.reports = reports
     api_key = os.environ.get("INGEST_API_KEY")

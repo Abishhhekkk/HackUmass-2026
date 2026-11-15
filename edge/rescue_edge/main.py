@@ -262,7 +262,7 @@ class SnapshotViewer:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="RescueSight edge pipeline")
+    ap = argparse.ArgumentParser(description="Vantage edge pipeline")
     ap.add_argument("--config", required=True)
     ap.add_argument("--serve", action="store_true", help="also serve the local dashboard")
     ap.add_argument("--serve-only", action="store_true",

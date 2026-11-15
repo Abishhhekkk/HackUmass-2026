@@ -1,4 +1,4 @@
-// RescueSight ESP32 telemetry relay  (UNTESTED ON HARDWARE - bring-up checklist in docs/hardware.md)
+// Vantage ESP32 telemetry relay  (UNTESTED ON HARDWARE - bring-up checklist in docs/hardware.md)
 //
 // Wiring (ESP32 DevKit):
 //   NEO-M8N GPS   TX -> GPIO16 (RX2), RX -> GPIO17 (TX2), 5V/3V3, GND

@@ -1,1 +1,1 @@
-"""RescueSight edge pipeline."""
+"""Vantage edge pipeline."""

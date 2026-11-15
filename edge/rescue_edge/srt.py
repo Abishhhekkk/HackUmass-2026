@@ -2,7 +2,7 @@
 
 DJI drones record an ``.SRT`` subtitle file next to each video: one block per frame (or per
 second on older models) with the drone's position. That is how existing drones, which have
-no onboard AI or storage of their own, give RescueSight its telemetry. Supported styles
+no onboard AI or storage of their own, give Vantage its telemetry. Supported styles
 (field names vary by model; verify with a file from YOUR drone):
 
 * Mini / Air / Mavic 3:  ``[latitude: 42.389012] [longitude: -72.528300] [rel_alt: 30.100 abs_alt: 120.500]``

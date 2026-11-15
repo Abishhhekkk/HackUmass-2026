@@ -100,7 +100,7 @@ def fetch_landmarks(lat: float, lon: float, radius_m: float, limit: int = 15) ->
 );
 out center {limit * 3};"""
     r = requests.post(OVERPASS_URL, data={"data": q}, timeout=20,
-                      headers={"User-Agent": "RescueSight-HackUMass/0.1"})
+                      headers={"User-Agent": "Vantage-HackUMass/0.1"})
     r.raise_for_status()
     from .storage import _haversine
 

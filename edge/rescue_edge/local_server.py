@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from .snapshot import latest_version, snapshot_dir
 
-NOT_BUILT_HTML = """<!doctype html><meta charset="utf-8"><title>RescueSight: dashboard not built</title>
+NOT_BUILT_HTML = """<!doctype html><meta charset="utf-8"><title>Vantage: dashboard not built</title>
 <body style="font-family:system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem">
 <h1>Dashboard not built</h1>
 <p>The API is running, but <code>web/dist</code> does not exist, so there is no dashboard to serve.
@@ -36,7 +36,7 @@ class NetworkToggle(BaseModel):
 
 
 def create_app(pipe, web_dir: Path) -> FastAPI:
-    app = FastAPI(title="RescueSight edge")
+    app = FastAPI(title="Vantage edge")
     root: Path = pipe.root
 
     def _dir(mission_id: str, version: int | None) -> tuple[Path, int]:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect a DJI .SRT flight log, and optionally convert it to RescueSight telemetry CSV.
+"""Inspect a DJI .SRT flight log, and optionally convert it to Vantage telemetry CSV.
 
     python scripts/srt_to_telemetry.py data/footage/DJI_0001.SRT --utc-offset -5
     python scripts/srt_to_telemetry.py DJI_0001.SRT --start 2026-11-14T15:00:00Z --csv tel.csv

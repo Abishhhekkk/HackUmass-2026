@@ -93,8 +93,8 @@ touching Wi-Fi.
 
 `Dockerfile` builds the dashboard and the API into one image (~360 MB):
 ```bash
-docker build -t rescuesight-api .
-docker run --rm -p 8000:8000 --env-file .env rescuesight-api
+docker build -t vantage-api .
+docker run --rm -p 8000:8000 --env-file .env vantage-api
 ```
 Hosts that assign a port set `$PORT`. Because the API is stateless, free container hosts that
 sleep or wipe their disk (Render, Hugging Face Spaces, Google Cloud Run, …) work; the uploader

@@ -1,8 +1,8 @@
-# RescueSight cloud API + dashboard in one image. Stateless: all data goes to DATABASE_URL
+# Vantage cloud API + dashboard in one image. Stateless: all data goes to DATABASE_URL
 # (Tiger Data), so it runs on any container host or a laptop. Inference stays on the Jetson.
 #
-#   docker build -t rescuesight-api .
-#   docker run --rm -p 8000:8000 --env-file .env rescuesight-api
+#   docker build -t vantage-api .
+#   docker run --rm -p 8000:8000 --env-file .env vantage-api
 #
 # Hosts that assign the port set $PORT; default 8000.
 
