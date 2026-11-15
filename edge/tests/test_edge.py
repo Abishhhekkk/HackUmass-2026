@@ -601,3 +601,18 @@ def test_serve_only_viewer_serves_saved_snapshots(tmp_path):
     assert client.get("/api/v1/status").json()["serve_only"] is True
     assert [m["mission_id"] for m in client.get("/api/v1/missions").json()] == ["sim-crowd"]
     assert client.get("/api/v1/missions/sim-crowd/latest").status_code == 200
+
+
+def test_uploader_follows_server_url_file(tmp_path):
+    from rescue_edge.uploader import Uploader
+
+    url_file = tmp_path / "cloud_url.txt"
+    up = Uploader(tmp_path, "m1", "https://old.example", server_url_file=str(url_file))
+    up._refresh_url()                       # no file yet: keep the configured URL
+    assert up.url == "https://old.example/api/v1/snapshots"
+    url_file.write_text("https://new-words.trycloudflare.com/\n")
+    up._refresh_url()
+    assert up.url == "https://new-words.trycloudflare.com/api/v1/snapshots"
+    url_file.write_text("garbage")          # not a URL: ignored
+    up._refresh_url()
+    assert up.url == "https://new-words.trycloudflare.com/api/v1/snapshots"

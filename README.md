@@ -42,6 +42,21 @@ without a position, exports and reports. Outage and upload-integrity demo contro
 the edge has an uplink configured. Gemini Q&A is read-only
 and falls back to the deterministic report when credentials or the integration are unavailable.
 
+## One-click start (demo)
+
+Put the same `.env` (DATABASE_URL, INGEST_API_KEY, optional GEMINI_API_KEY) in the repo root on
+both machines, then:
+
+* **Laptop (cloud side):** double-click `Vantage-Cloud.bat`. It installs what changed, rebuilds the
+  website if needed, starts the API (refuses to run without Tiger Data or a real ingest key),
+  starts the Cloudflare quick tunnel and records its address in Tiger Data.
+* **Jetson (drone side):** `./vantage-edge.sh` (or `./vantage-edge.sh --install-shortcut` once for
+  a desktop icon). It reads the laptop's address from Tiger Data and keeps following it, so a
+  restarted tunnel needs no reconfiguration; uses the trained engine and BoT-SORT; runs the
+  newest clip config, or `--video clip.mp4` (its `.SRT` flight log if present, else a labelled
+  simulated path). With no address yet the mission still runs and uploads start later.
+  `CLOUD_URL=https://...` in the Jetson's `.env` forces an address instead.
+
 ## Cloud: FastAPI + Tiger Data
 
 The Jetson uploads snapshots over any internet link (4G/5G stick, hotspot, Wi-Fi) to a

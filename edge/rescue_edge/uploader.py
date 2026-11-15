@@ -40,11 +40,15 @@ CONFIG_ERRORS = {
 class Uploader(threading.Thread):
     def __init__(self, root: str | Path, mission_id: str, server_url: str, api_key: str | None = None,
                  offline_flag_file: str | None = None, base_backoff_s: float = 2.0,
-                 max_backoff_s: float = 60.0, poll_s: float = 2.0):
+                 max_backoff_s: float = 60.0, poll_s: float = 2.0,
+                 server_url_file: str | None = None):
         super().__init__(daemon=True)
         self.mission_dir = Path(root) / mission_id
         self.root, self.mission_id = Path(root), mission_id
         self.url = server_url.rstrip("/") + "/api/v1/snapshots"
+        # Optional file holding the current server URL (one line). Re-read before every attempt,
+        # so a quick-tunnel address that changed mid-mission is picked up without a restart.
+        self.url_file = Path(server_url_file) if server_url_file else None
         self.api_key = api_key
         self.offline_flag = Path(offline_flag_file) if offline_flag_file else None
         self.base, self.cap, self.poll = base_backoff_s, max_backoff_s, poll_s
@@ -91,7 +95,18 @@ class Uploader(threading.Thread):
         self._wake.set()
 
     # ------------------------------------------------------------------ upload
+    def _refresh_url(self) -> None:
+        if not self.url_file:
+            return
+        try:
+            base = self.url_file.read_text().strip()
+        except OSError:
+            return
+        if base.startswith(("http://", "https://")):
+            self.url = base.rstrip("/") + "/api/v1/snapshots"
+
     def upload_once(self, version: int) -> dict:
+        self._refresh_url()
         d = snapshot_dir(self.root, self.mission_id, version)
         manifest = json.loads((d / "manifest.json").read_text())
         files = [("manifest", ("manifest.json", (d / "manifest.json").read_bytes(), "application/json"))]

@@ -101,7 +101,8 @@ class Pipeline:
                 self.root, self.mission_id, ucfg["server_url"],
                 api_key=os.environ.get(ucfg.get("api_key_env", "INGEST_API_KEY")),
                 offline_flag_file=str(self._path(ucfg["offline_flag_file"])) if ucfg.get("offline_flag_file") else None,
-                base_backoff_s=ucfg.get("base_backoff_s", 2.0), max_backoff_s=ucfg.get("max_backoff_s", 60.0))
+                base_backoff_s=ucfg.get("base_backoff_s", 2.0), max_backoff_s=ucfg.get("max_backoff_s", 60.0),
+                server_url_file=str(self._path(ucfg["server_url_file"])) if ucfg.get("server_url_file") else None)
         self.running = False
         self.finished = False
         self.last_frame_t: float | None = None
