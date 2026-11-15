@@ -57,8 +57,8 @@ function useReveal() {
 
 function VersionLanes({ m }) {
   const { uploader, role, manifest, link } = m;
-  const local = uploader?.local_version ?? (role === "edge" ? manifest?.version ?? 0 : null);
-  const cloud = uploader?.acked_version ?? (role === "cloud" ? manifest?.version ?? 0 : null);
+  const local = uploader?.local_version ?? (role === "edge" || role === "demo" ? manifest?.version ?? 0 : null);
+  const cloud = uploader?.acked_version ?? (role === "cloud" || role === "demo" ? manifest?.version ?? 0 : null);
   const top = Math.max(local || 0, cloud || 0, 1);
   const first = Math.max(1, top - 23);
   const ids = Array.from({ length: top - first + 1 }, (_, i) => first + i);
@@ -372,9 +372,11 @@ export default function Home() {
                   </>
                 ) : (
                   <p>
-                    Questions are answered by the cloud API. You are looking at
-                    {role === "edge" ? " the drone's own copy" : " a page with no service behind it"};
-                    open Vantage through the cloud address to ask.
+                    {role === "demo"
+                      ? "Questions are answered by the cloud service when Vantage is connected to it."
+                      : `Questions are answered by the cloud API. You are looking at ${
+                          role === "edge" ? "the drone's own copy" : "a page with no service behind it"
+                        }; open Vantage through the cloud address to ask.`}
                   </p>
                 )}
               </div>

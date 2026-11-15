@@ -160,6 +160,7 @@ svg {
 }
 
 .tone-online,
+.tone-demo,
 .tone-cloud {
   color: var(--ok);
 }

@@ -9,15 +9,34 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const PRIMARY = "/api/v1";
 const EDGE = import.meta.env.DEV ? "/edge-api/api/v1" : null;
+// A recorded mission bundled with the website (scripts/export_demo.py writes web/public/demo/).
+// Used only when no live service answers, e.g. on Netlify: anyone can open the demo any time.
+const DEMO = `${import.meta.env.BASE_URL}demo`;
+
+function demoUrl(path) {
+  const p = path.split("?")[0];
+  if (p === "/status") return `${DEMO}/status.json`;
+  if (p === "/missions") return `${DEMO}/missions.json`;
+  let m = p.match(/^\/missions\/[^/]+\/(latest|ai-report|flight-path)$/);
+  if (m) return `${DEMO}/${m[1]}.json`;
+  m = p.match(/^\/missions\/[^/]+\/files\/([\w.-]+)$/);
+  if (m) return `${DEMO}/files/${m[1]}`;
+  return null;
+}
 export const POLL_MS = 3000;
 
 export const NO_SERVICE =
   "No mission service at this address. This copy of Vantage is the website only; live missions are on the Jetson and the cloud API.";
 
 async function request(base, path, options = {}) {
+  let url = `${base}${path}`;
+  if (base === DEMO) {
+    url = (options.method || "GET") === "GET" ? demoUrl(path) : null;
+    if (!url) throw new Error("This action needs the Jetson or the cloud API to be connected.");
+  }
   // ngrok's free plan shows browsers a notice page instead of the API unless this header is sent.
   const headers = { "ngrok-skip-browser-warning": "1", ...(options.headers || {}) };
-  const response = await fetch(`${base}${path}`, { ...options, headers });
+  const response = await fetch(url, { ...options, headers });
   const type = response.headers.get("content-type") || "";
   // A static host (Netlify, Vercel) answers API paths with its own HTML page, not our JSON.
   if (type.includes("text/html")) {
@@ -153,6 +172,15 @@ export function useMission() {
           /* report the original error below */
         }
       }
+      if (!nextStatus && api !== DEMO) {
+        try {
+          nextStatus = await request(DEMO, "/status");   // no live service: the recorded demo
+          api = DEMO;
+          setBase(DEMO);
+        } catch {
+          /* no recorded demo either */
+        }
+      }
       if (!nextStatus) {
         setError(reason.message || "The mission service is not reachable.");
         setLoaded(true);
@@ -186,7 +214,9 @@ export function useMission() {
       const id = encodeURIComponent(chosen);
       const [latest, ai] = await Promise.allSettled([
         request(api, `/missions/${id}/latest`),
-        nextStatus.role === "cloud" ? request(api, `/missions/${id}/ai-report`) : Promise.resolve(null),
+        nextStatus.role === "cloud" || nextStatus.role === "demo"
+          ? request(api, `/missions/${id}/ai-report`)
+          : Promise.resolve(null),
       ]);
       if (latest.status === "rejected") throw latest.reason;
       setData((current) =>
@@ -260,9 +290,14 @@ export function useMission() {
   if (uploader) link = uploader.online === false ? "offline" : uploader.pending ? "pending" : "online";
   else if (role === "cloud") link = "cloud";
   else if (role === "edge") link = "local";
+  else if (role === "demo") link = "demo";
 
   const files = (name) =>
-    missionId ? `${base}/missions/${encodeURIComponent(missionId)}/files/${name}` : undefined;
+    !missionId
+      ? undefined
+      : base === DEMO
+        ? `${DEMO}/files/${name}`
+        : `${base}/missions/${encodeURIComponent(missionId)}/files/${name}`;
 
   const actions = {
     refresh,
@@ -332,5 +367,6 @@ export const LINK_LABEL = {
   offline: "No link · holding on board",
   cloud: "Cloud copy",
   local: "On board · no uplink configured",
+  demo: "Cloud copy",
   unknown: "Connecting",
 };

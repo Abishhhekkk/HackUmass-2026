@@ -16,3 +16,4 @@ node_modules/
 datasets/
 runs/
 config/*.sim.yaml
+/web/public/demo/

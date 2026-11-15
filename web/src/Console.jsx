@@ -228,7 +228,7 @@ function Reports({ m, onRead, busy, onGenerate }) {
         </a>
       </div>
       <span className="label section-gap">Mission report</span>
-      {m.role === "cloud" ? (
+      {m.role === "cloud" || m.role === "demo" ? (
         <>
           <p className="fine">{describeReport(m.aiReport)}</p>
           <div className="report-actions">
@@ -237,9 +237,11 @@ function Reports({ m, onRead, busy, onGenerate }) {
                 <FileText size={15} /> Read report
               </button>
             )}
-            <button type="button" className="btn btn-signal" onClick={onGenerate} disabled={busy || !m.missionId}>
-              <RefreshCw size={15} className={busy ? "spin" : ""} /> {busy ? "Writing…" : "Write a fresh one"}
-            </button>
+            {m.role === "cloud" && (
+              <button type="button" className="btn btn-signal" onClick={onGenerate} disabled={busy || !m.missionId}>
+                <RefreshCw size={15} className={busy ? "spin" : ""} /> {busy ? "Writing…" : "Write a fresh one"}
+              </button>
+            )}
           </div>
           <p className="fine">
             Written by Gemini from the mission tools on a schedule or on request; a deterministic
@@ -318,7 +320,7 @@ export default function Console() {
 
   const sync = uploader
     ? `local v${uploader.local_version ?? 0} · cloud v${uploader.acked_version ?? 0}`
-    : m.role === "cloud" && manifest
+    : (m.role === "cloud" || m.role === "demo") && manifest
       ? `received v${manifest.version} · ${clock(m.data?.received_at)}`
       : "—";
 
@@ -353,7 +355,7 @@ export default function Console() {
           <span className="mono">{m.error === NO_SERVICE ? "Website only" : m.error && !status ? "Service unreachable" : LINK_LABEL[link]}</span>
         </span>
         <span className="c-top-right">
-          <span className="c-source mono">{m.role === "cloud" ? "CLOUD" : m.role === "edge" ? "ON BOARD" : "—"}</span>
+          <span className="c-source mono">{m.role === "cloud" ? "CLOUD" : m.role === "edge" ? "ON BOARD" : m.role === "demo" ? "CLOUD" : "—"}</span>
           <span className="c-clock mono">{clock(now)}</span>
           <button type="button" className="btn btn-ghost c-cmd" onClick={() => setPalette(true)}>
             <CommandIcon size={14} /> <span>Actions</span> <kbd className="mono">Ctrl K</kbd>
