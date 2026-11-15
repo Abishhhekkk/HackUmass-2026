@@ -40,7 +40,8 @@ n_frames, n_tracks, cell_id, position_method, unlocated_reason, track_ids`
 * `status = estimated_sighting`: has `lat/lon` (WGS84 decimal degrees) and `horizontal_error_m`.
 * `status = unlocated_sighting`: `lat/lon` empty, `unlocated_reason` is one of
   `no_telemetry, telemetry_stale, gnss_fix_invalid, altitude_invalid, attitude_exceeds_limit,
-  ray_too_oblique, camera_resolution_mismatch`. These may be the same people as located rows.
+  ray_too_oblique, camera_resolution_mismatch, heading_unknown`. (`heading_unknown`: the
+  drone's log gives no way to tell where the image top points, see `rescue_edge/srt.py`.) These may be the same people as located rows.
   They are never given the drone's own position as a fallback.
 * `person_id` (`P001`…) is only stable within one snapshot. `track_ids` are
   `pass:tracker_id`, which are temporary IDs inside one pass, never identities.
@@ -76,7 +77,8 @@ positions, never sighting locations.**
 * `t` is UTC epoch seconds; `observed_at` the same instant as ISO-8601.
 * `valid = 1`: pose fields are set. `valid = 0`: no usable fix at that time; position fields
   are empty and `reason` is one of the telemetry reasons above (`no_telemetry`,
-  `telemetry_stale`, `gnss_fix_invalid`, `altitude_invalid`). Gaps are kept, never filled.
+  `telemetry_stale`, `gnss_fix_invalid`, `altitude_invalid`, `heading_unknown`). Gaps are
+  kept, never filled.
 * The file holds the whole track so far (a snapshot is full state). The cloud inserts only
   rows newer than what it already stored for that mission and drone, so re-sends are harmless.
 * Optional for the server: snapshots without it (older edges) are still accepted.

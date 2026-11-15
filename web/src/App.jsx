@@ -291,6 +291,7 @@ const UNLOCATED_REASONS = {
   attitude_exceeds_limit: "Drone tilted too far",
   ray_too_oblique: "Too far off-nadir",
   camera_resolution_mismatch: "Frame size ≠ calibration",
+  heading_unknown: "Drone heading unknown",
 };
 
 // Minimal RFC 4180 parser: the edge writes plain CSV, but quoted fields are handled anyway.

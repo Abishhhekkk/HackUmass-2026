@@ -47,10 +47,28 @@ class Pipeline:
         # A replayed log is loaded whole before the first frame, so it must not be capped;
         # a live serial feed keeps a bounded rolling window.
         self.telemetry = TelemetryBuffer(tcfg.get("max_gap_s", 1.0), tcfg.get("max_age_s", 2.0),
-                                         max_samples=None if tcfg["kind"] == "replay" else 512)
+                                         max_samples=None if tcfg["kind"] in ("replay", "srt") else 512)
         self.serial_reader = None
         if tcfg["kind"] == "replay":
             load_csv(self._path(tcfg["path"]), self.telemetry)
+        elif tcfg["kind"] == "srt":
+            # Existing drone's own flight log (DJI .SRT) recorded with the video: timed by
+            # position in the video, so it lines up with VideoFileSource frames exactly.
+            from .srt import load_srt
+
+            if cfg["source"]["kind"] != "video":
+                raise ValueError("telemetry.kind: srt needs source.kind: video (the SRT's video)")
+            start = cfg["source"].get("video_start_time")
+            _, stats = load_srt(self._path(tcfg["path"]), self.telemetry,
+                                _parse_time(start) if start not in (None, "") else None,
+                                tcfg.get("utc_offset_hours", 0.0),
+                                tcfg.get("min_move_m", 2.0), tcfg.get("course_hold_s", 3.0))
+            cfg["source"]["video_start_time"] = stats.start_time
+            self.srt_stats = stats
+            log.info("SRT: %d records, heading from %s, height from %s, %d without GPS",
+                     stats.records, stats.heading_from, stats.alt_source, stats.no_gps)
+            for w in stats.warnings:
+                log.warning("SRT: %s", w)
         elif tcfg["kind"] == "serial":
             self.serial_reader = SerialTelemetryReader(
                 tcfg["port"], tcfg.get("baud", 115200), self.telemetry,

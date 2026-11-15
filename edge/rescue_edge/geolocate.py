@@ -42,9 +42,18 @@ class CameraModel:
         return cls(width, height, fx, fx, width / 2, height / 2)
 
     @classmethod
+    def from_dfov(cls, width: int, height: int, dfov_deg: float) -> "CameraModel":
+        """From the DIAGONAL field of view, as drone makers (e.g. DJI) publish it."""
+        half_diag = math.hypot(width, height) / 2
+        fx = half_diag / math.tan(math.radians(dfov_deg) / 2)
+        return cls(width, height, fx, fx, width / 2, height / 2)
+
+    @classmethod
     def from_config(cls, cfg: dict) -> "CameraModel":
         if all(k in cfg for k in ("fx", "fy", "cx", "cy")):
             return cls(cfg["width"], cfg["height"], cfg["fx"], cfg["fy"], cfg["cx"], cfg["cy"])
+        if "dfov_deg" in cfg:
+            return cls.from_dfov(cfg["width"], cfg["height"], cfg["dfov_deg"])
         return cls.from_hfov(cfg["width"], cfg["height"], cfg["hfov_deg"])
 
 

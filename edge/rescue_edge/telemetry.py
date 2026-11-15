@@ -36,6 +36,7 @@ class TelemetrySample:
     roll: float
     fix: int = 3          # 0/1 = no fix, 2 = 2D, 3 = 3D
     hdop: float = 1.0
+    heading_valid: bool = True  # False: no way to know where the image top points (hdg unused)
 
     @property
     def invalid_reason(self) -> str | None:
@@ -49,6 +50,8 @@ class TelemetrySample:
             return "gnss_fix_invalid"
         if self.alt_agl <= 0:
             return "altitude_invalid"
+        if not self.heading_valid:
+            return "heading_unknown"
         return None
 
     @property
@@ -63,6 +66,7 @@ class TelemetrySample:
                 alt_agl=float(d["alt_agl"]), hdg=float(d["hdg"]),
                 pitch=float(d.get("pitch", 0.0)), roll=float(d.get("roll", 0.0)),
                 fix=int(d.get("fix", 3)), hdop=float(d.get("hdop", 1.0)),
+                heading_valid=str(d.get("heading_valid", "1")).strip().lower() not in ("0", "false"),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("Telemetry line is missing or has invalid required numeric fields") from exc

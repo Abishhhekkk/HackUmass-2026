@@ -1,0 +1,72 @@
+# Jetson Orin Nano + RECORDED footage from an existing drone (the hackathon demo).
+# The drone needs no onboard AI or storage of its own: its video + its own flight log (DJI .SRT)
+# are processed on the Jetson as if they were arriving live.
+#
+#   1. Copy the video and its .SRT (same name, recorded together) into data/footage/.
+#   2. Check the log: python scripts/srt_to_telemetry.py data/footage/DJI_0001.SRT --utc-offset -5
+#   3. Set camera.width/height to the VIDEO's resolution and dfov_deg to your drone's spec.
+#   4. cd edge && python -m rescue_edge.main --config ../config/edge.footage.yaml --serve
+#
+# Relative paths are relative to the repo root.
+mission_id: null          # null => auto-generate per run
+drone_id: drone-01
+storage_root: data/edge/snapshots
+
+source:
+  kind: video
+  path: data/footage/DJI_0001.MP4
+  realtime: true          # pace frames like a live feed (false = process as fast as possible)
+  # UTC time of the first frame. Leave empty to take it from the SRT's local clock + utc_offset_hours.
+  video_start_time:
+
+telemetry:
+  kind: srt               # the drone's own log; timed by position in the video, so frames align exactly
+  path: data/footage/DJI_0001.SRT
+  utc_offset_hours: -5    # the drone's clock vs UTC (US Eastern, November = -5). Only affects absolute times.
+  min_move_m: 2.0         # heading from direction of travel when the SRT has no gimbal yaw
+  course_hold_s: 3.0      # keep that heading this long after the drone stops, then 'heading_unknown'
+  max_gap_s: 1.0
+  max_age_s: 2.0
+
+camera:                   # must describe the VIDEO frames (mismatch => detections kept unlocated)
+  width: 1920
+  height: 1080
+  dfov_deg: 82.1          # DJI publishes the DIAGONAL field of view; replace with your drone's spec
+                          # (or calibrated fx, fy, cx, cy). Note: 4K/16:9 crops may change the FOV.
+
+detector:
+  kind: yolo
+  model_path: models/yolov8n.engine   # or your fine-tuned engine (docs/training.md)
+  imgsz: 640              # must equal the engine's export size
+  conf_threshold: 0.10    # ByteTrack's low threshold (see edge.jetson.yaml)
+  device: 0
+  tracker: bytetrack.yaml
+  tile: 320               # tiled detection for small people; 480 or 640 if too slow (docs/detector-eval.md)
+  tile_overlap: 0.2
+  tile_full_frame: true
+
+aggregate:
+  min_frames: 3
+  merge_radius_m: 4.0
+  cell_size_m: 10.0
+  recency_tau_s: 1800
+
+scheduler:
+  search_stride: 4
+  active_stride: 1
+  thermal_stride: 6
+  hold_active_s: 3.0
+  thermal_limit_c: 80
+
+snapshot_interval_s: 10
+flight_path_interval_s: 1.0
+
+uploader:
+  enabled: true
+  server_url: https://YOUR-VULTR-HOST
+  api_key_env: INGEST_API_KEY
+  offline_flag_file: data/edge/OFFLINE
+
+local_server:
+  host: 0.0.0.0
+  port: 8080

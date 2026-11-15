@@ -40,6 +40,17 @@ overview uses live mission snapshots, exposes edge-only outage and upload-integr
 and provides a mission-scoped assistant when served by the cloud API. Gemini Q&A is read-only
 and falls back to the deterministic report when credentials or the integration are unavailable.
 
+## Recorded footage from an existing drone
+
+RescueSight adds onboard AI and offline storage to drones that have neither: a Jetson Orin
+Nano processes the drone's video together with the drone's own flight log (DJI `.SRT`).
+Put the video and its `.SRT` in `data/footage/`, check the log with
+`python scripts/srt_to_telemetry.py data/footage/DJI_0001.SRT --utc-offset -5`, then run
+`python -m rescue_edge.main --config ../config/edge.footage.yaml --serve` from `edge/`
+(steps in the config's header). Detection uses tiled YOLO (`docs/detector-eval.md`); to train
+an aerial person model on a laptop or Vultr GPU and load it on the Jetson, see
+[docs/training.md](./docs/training.md).
+
 For frontend development, start the API first, then run `npm run dev` in `web`. See
 [docs/deploy.md](./docs/deploy.md) for dashboard builds, TigerData/PostGIS configuration, and
 Gemini setup. For actual Jetson hardware, use [docs/hardware.md](./docs/hardware.md).
