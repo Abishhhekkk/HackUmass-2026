@@ -101,20 +101,22 @@ sleep or wipe their disk (Render, Hugging Face Spaces, Google Cloud Run, …) wo
 simply retries while a sleeping host wakes up. Set `INGEST_API_KEY` and `DATABASE_URL` as the
 host's secrets, then point the Jetson's `server_url` at the host's HTTPS address.
 
-## Option C: Vultr (or any Ubuntu VM)
+## Option C: Vultr (or any Ubuntu VM): always on, fixed HTTPS address
 
-A small CPU instance is enough (inference runs on the Jetson). Either run the container
-(Option B; install Docker first) or, without Docker:
-```bash
-sudo apt update && sudo apt install -y python3-venv git
-git clone https://github.com/Abishhhekkk/HackUmass-2026.git && cd HackUmass-2026 && git checkout claude
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r server/requirements.txt -r server/requirements-postgres.txt
-cp .env.example .env && nano .env        # INGEST_API_KEY + DATABASE_URL
-cd server && uvicorn rescue_api.app:app --host 127.0.0.1 --port 8000
-```
-Expose it with HTTPS: `cloudflared tunnel --url http://127.0.0.1:8000` works here too, or a
-reverse proxy such as Caddy. Run it under `tmux` or a systemd service so it survives logout.
+`infra/vultr/setup.sh` turns a fresh Ubuntu 24.04 VM into the cloud side: Docker, the repo's
+image (API + dashboard), and Caddy for automatic HTTPS on `<ip-with-dashes>.sslip.io` (free, no
+domain needed). Data stays in Tiger Data; the VM holds nothing you would lose.
+
+1. Vultr: Cloud Compute, Shared CPU, Ubuntu 24.04, the smallest plan (1 vCPU / 1 GB is enough;
+   the script adds swap for the build). Note its IP.
+2. From the laptop's repo folder (holds the `.env`): `scp .env root@VM-IP:/root/vantage.env`
+3. On the VM (`ssh root@VM-IP`):
+   `curl -fsSL https://raw.githubusercontent.com/Abishhhekkk/HackUmass-2026/claude/infra/vultr/setup.sh | bash`
+4. It prints `https://<ip-with-dashes>.sslip.io`. Jetson `.env`: `CLOUD_URL=` that address.
+
+Update after a push: run the same command again (it pulls, rebuilds, restarts). Logs:
+`cd /opt/vantage/infra/vultr && docker compose logs -f api`. A real domain: `DOMAIN=api.example.com`
+before `bash` (point its DNS A record at the VM first).
 
 ## Gemini report
 
